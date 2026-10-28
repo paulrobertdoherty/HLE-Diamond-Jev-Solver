@@ -1,0 +1,29 @@
+# Credentials
+.env
+.env.*
+!.env.example
+*.pem
+
+# Local benchmark material and private traces
+data/
+private/
+runs/
+artifacts/
+cache/
+.cache/
+*.parquet
+*.arrow
+
+# Python and local tooling
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Environment-owned directories
+.agents/
+.aws/
+.codex/
