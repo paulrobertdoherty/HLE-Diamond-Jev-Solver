@@ -1,0 +1,9 @@
+{
+  "arm": "R",
+  "track": "extended",
+  "corpus": "private/corpus.json",
+  "retrieval": "hybrid-jev",
+  "departures": [
+    "Frozen reference corpus and hashed character features"
+  ]
+}

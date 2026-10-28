@@ -1,0 +1,27 @@
+{
+  "upstream_commit": "22ed3074b1e7b134bcbc09028d0ba320839b0655",
+  "files": {
+    "protocol/upstream/blocklist.json": {
+      "sha256": "3abaf35e03d6d5d361d2611746683a32315fe73ef851ec5f33c54b3c6a526575",
+      "source": "https://github.com/centerforaisafety/hle/blob/22ed3074b1e7b134bcbc09028d0ba320839b0655/docs/blocklist.json"
+    },
+    "protocol/upstream/evaluation-with-tools.md": {
+      "sha256": "3852a7f7008ceb27e9aec97f223436acbecdc9a4bc22cd63de54e5f0d49d9cab",
+      "source": "https://github.com/centerforaisafety/hle/blob/22ed3074b1e7b134bcbc09028d0ba320839b0655/docs/evaluation-with-tools.md"
+    },
+    "protocol/upstream/requirements-tools.txt": {
+      "sha256": "c1c626beb8f2fab11609f6ed41a2721d9acd139554d6ce3c8c83f52a49797068",
+      "source": "https://github.com/centerforaisafety/hle/blob/22ed3074b1e7b134bcbc09028d0ba320839b0655/docs/requirements-tools.txt"
+    },
+    "protocol/upstream/run_judge_results.py": {
+      "sha256": "a796e74d6e58beab3bd88f46182f599443a102308b2d1c7e0b4b22f578468446",
+      "source": "https://github.com/centerforaisafety/hle/blob/22ed3074b1e7b134bcbc09028d0ba320839b0655/hle_eval/run_judge_results.py"
+    },
+    "protocol/upstream/LICENSE": {
+      "sha256": "f402878026b8008bd53f2f038b5c9e3e6b7c1a690e05e2ca6ddbc9019aa3c08e",
+      "source": "https://github.com/centerforaisafety/hle/blob/22ed3074b1e7b134bcbc09028d0ba320839b0655/LICENSE"
+    }
+  },
+  "python": "3.11.16",
+  "custom_harness": true
+}

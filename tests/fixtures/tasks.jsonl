@@ -1,0 +1,4 @@
+{"id": "synthetic-arithmetic-1", "question": "What is 6 * 7? Give the integer.", "answer": "42", "partition": "reasoning", "subject": "mathematics", "answer_type": "exactMatch"}
+{"id": "synthetic-arithmetic-2", "question": "What is 13 + 9? Give the integer.", "answer": "22", "partition": "reasoning", "subject": "mathematics", "answer_type": "exactMatch"}
+{"id": "synthetic-reference-1", "question": "According to the fictional reference, what is the synthetic cobalt code?", "answer": "27", "partition": "knowledge", "subject": "fictional reference", "answer_type": "exactMatch"}
+{"id": "synthetic-image-1", "question": "What is 3 + 4? Give the integer. The original image is attached.", "answer": "7", "partition": "reasoning", "subject": "mathematics", "answer_type": "exactMatch", "image": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aIZkAAAAASUVORK5CYII="}

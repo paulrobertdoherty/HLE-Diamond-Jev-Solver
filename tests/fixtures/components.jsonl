@@ -1,0 +1,4 @@
+{"id": "relevance-positive", "stage": "J2", "state": {"subquestion": "synthetic cobalt code", "passage": "The synthetic cobalt code is 27."}, "expected": 1}
+{"id": "relevance-negative", "stage": "J2", "state": {"subquestion": "synthetic cobalt code", "passage": "This unrelated text describes a tree."}, "expected": 0}
+{"id": "citation-positive", "stage": "J3", "state": {"claim": "The synthetic cobalt code is 27.", "quote": "The synthetic cobalt code is 27.", "source_context": "The synthetic cobalt code is 27."}, "expected": "supported"}
+{"id": "citation-negative", "stage": "J3", "state": {"claim": "The synthetic cobalt code is 28.", "quote": "The synthetic cobalt code is 27.", "source_context": "The synthetic cobalt code is 27."}, "expected": "contradicted"}

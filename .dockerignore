@@ -1,0 +1,5 @@
+**
+!protocol/
+!protocol/Dockerfile
+!protocol/upstream/
+!protocol/upstream/requirements-tools.txt

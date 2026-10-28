@@ -1,0 +1,6 @@
+{
+  "arm": "Jfull",
+  "track": "controlled",
+  "adaptive": true,
+  "selector": "jev"
+}

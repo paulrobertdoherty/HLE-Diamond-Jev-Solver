@@ -27,3 +27,17 @@ htmlcov/
 .agents/
 .aws/
 .codex/
+
+# Build outputs
+*.egg-info/
+build/
+dist/
+
+# Private artifacts remain private even under a custom output directory
+*.sqlite3
+*.sqlite3-*
+**/predictions.json
+**/grades.json
+**/solver/questions.jsonl
+**/evaluator/labels.jsonl
+**/contamination.json

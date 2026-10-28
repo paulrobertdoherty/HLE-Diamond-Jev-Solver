@@ -1,0 +1,45 @@
+{
+  "arm": "B0",
+  "track": "closed",
+  "dataset": "cais/hle-diamond",
+  "dataset_revision": "REPLACE_WITH_EXACT_HF_COMMIT",
+  "scope": "REPLACE_WITH_DECLARED_SCOPE",
+  "provider": {
+    "kind": "openai",
+    "model": "<PINNED_GRADER_MODEL>",
+    "input_per_million": 2.0,
+    "output_per_million": 8.0,
+    "max_input_tokens": 65536,
+    "max_output_tokens": 4096,
+    "vision": true,
+    "structured_output": true,
+    "reasoning_effort": "medium"
+  },
+  "jev": {
+    "kind": "typesafe",
+    "model": "jev-1.14.0",
+    "input_per_million": 0.042,
+    "output_per_million": 0,
+    "max_input_tokens": 64000,
+    "max_output_tokens": 4096
+  },
+  "search_backend": "mock",
+  "search_usd": 0.005,
+  "fetch_usd": 0,
+  "code_usd": 0,
+  "sandbox_image": "jev-sandbox@sha256:<BUILT_IMAGE_DIGEST>",
+  "limits": {
+    "item_usd": 1,
+    "run_usd": 10,
+    "deadline_s": 600,
+    "candidates": 3,
+    "rounds": 2,
+    "search": 6,
+    "fetch": 8,
+    "code": 3,
+    "calls": 60,
+    "retries": 1,
+    "concurrency": 2,
+    "finalization_usd": 0.1
+  }
+}

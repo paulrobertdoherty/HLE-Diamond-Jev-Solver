@@ -1,0 +1,10 @@
+{
+  "arm": "M",
+  "track": "controlled",
+  "additional_providers": [
+    {
+      "kind": "mock",
+      "model": "synthetic-independent-v2"
+    }
+  ]
+}
