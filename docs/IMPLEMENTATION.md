@@ -26,9 +26,13 @@ B0 makes exactly one structured backbone call. B1 generates the configured numbe
 
 B2 starts with one candidate. Each bounded round uses at most three short queries and the first three allowed search results per query, subject to hard global search/fetch caps. Parsed pages become passages with exact offsets. A lexical shortlist has at most 20 passages; a diverse evidence packet has at most six passages, at most two per host, and a configured character budget. Code checks run only when supplied. The backbone revises; exact citation failures or missing citations trigger one repair. Persistent critical failures lead to abstention. No reference answer participates in these decisions.
 
+Reaching a search or fetch call cap ends research with the evidence already collected, including cached evidence replayed after interruption. Revision and selection proceed within the remaining budget. Total-call limits, dollar limits and provider reservation overruns still halt the solve.
+
 J2 replaces lexical ordering of the identical shortlist with Jev's ordered relevance judgments. J3 adds semantic support judgments after exact span checks. J23 combines them. Jev never creates queries, code or proof steps. Configured Jev fallback records an outage and follows the corresponding baseline policy; it never fabricates a successful judgment.
 
 Jfull adds independent initial candidates, routing among enumerated actions, separate narrow constraint checks, anonymized selection with none-supported, and a bounded continuation decision. Its default 0.5 Noul flag threshold is an experimental setting requiring development validation. Selection uses candidate confidence rather than interpreting the probability of a Choice winner as whole-answer correctness. Each extra stage consumes the same shared call, token, time and dollar envelope. Jfull is not automatically promoted over J23.
+
+Adaptive constraint checks run again after repair. Persistent failures reject the repaired answer. If selection chooses an initial candidate that has not passed those checks, it is checked before finalization and rejected if constraints remain unresolved.
 
 ## Deliberate scope and remaining empirical work
 

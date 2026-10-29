@@ -12,7 +12,7 @@ from dataclasses import asdict
 from enum import Enum
 from pathlib import Path
 
-from ..benchmarks.data import load_questions
+from ..benchmarks.data import load_questions, load_split
 from ..candidates.selection import select
 from ..config import Config, verify_protocol
 from ..judgments.pipeline import constraints, continuation, failures, rerank, route, verify
@@ -25,7 +25,7 @@ from ..tools.policy import Policy
 from ..tools.sandbox import Sandbox
 from ..tools.web import AuditedWeb
 from ..tracing.store import Store, atomic_json, private_dir
-from .budget import Budget, BudgetExceeded
+from .budget import Budget, BudgetExceeded, CallLimitExceeded
 
 
 class Phase(str, Enum):
@@ -98,20 +98,27 @@ class Solver:
     async def research(self, q: QuestionView, candidate: Candidate):
         passages = []
         queries = list(candidate.queries[:3]) or list(candidate.gaps[:1])
-        for query in queries:
-            if self.corpus:
-                passages.extend(
-                    self.corpus.retrieve(query, hybrid=self.config.retrieval != "lexical")
-                )
-            results = await self.web.search(q.id, query, q.question)
-            for result in results[:3]:
-                try:
-                    page = await self.web.fetch(q.id, result["url"])
-                except ProviderError:
-                    self.store.event(q.id, "source_unavailable", {"url": result["url"]})
-                    continue
-                if page:
-                    passages.extend(chunk_page(page, query))
+        try:
+            for query in queries:
+                if self.corpus:
+                    passages.extend(
+                        self.corpus.retrieve(query, hybrid=self.config.retrieval != "lexical")
+                    )
+                results = await self.web.search(q.id, query, q.question)
+                for result in results[:3]:
+                    try:
+                        page = await self.web.fetch(q.id, result["url"])
+                    except ProviderError:
+                        self.store.event(q.id, "source_unavailable", {"url": result["url"]})
+                        continue
+                    if page:
+                        passages.extend(chunk_page(page, query))
+        except CallLimitExceeded as e:
+            if e.kind not in {"search", "fetch"}:
+                raise
+            # Cache replays above remain available even at the tool cap. Keep
+            # their evidence and use the remaining budget to revise and finalize.
+            self.store.event(q.id, "research_limit", {"kind": e.kind})
         shortlist = lexical_rank(list({p.id: p for p in passages}.values()))[:20]
         if self.config.arm in {"J2", "J23", "Jfull", "M"} or self.config.retrieval == "hybrid-jev":
             shortlist = await rerank(self.jev, q.id, shortlist)
@@ -122,6 +129,7 @@ class Solver:
         started = json.loads(previous[0])["started_at"] if previous and previous[0] else time.time()
         self.starts[q.id] = started
         candidates, selected, status, error = [], None, "completed", ""
+        constraint_validated = set()
         try:
             remaining = self.config.limits.deadline_s - (time.time() - started)
             if remaining <= 0:
@@ -186,6 +194,8 @@ class Solver:
                             if self.config.adaptive
                             else []
                         )
+                        if self.config.adaptive and not constraint_failures:
+                            constraint_validated.add(revised.id)
                         missing = bool(evidence) and bool(revised.answer) and not revised.citations
                         if issues or constraint_failures or missing:
                             self.transition(q.id, Phase.REVISE)
@@ -205,11 +215,27 @@ class Solver:
                             self.transition(q.id, Phase.VERIFY)
                             checks = await verify(self.jev, q.id, revised, evidence, semantic)
                             self.store.event(q.id, "citation_checks", checks)
-                            if failures(checks) or (
-                                bool(evidence) and bool(revised.answer) and not revised.citations
+                            constraint_failures = (
+                                await constraints(self.jev, q.id, q.question, revised)
+                                if self.config.adaptive
+                                else []
+                            )
+                            if self.config.adaptive and not constraint_failures:
+                                constraint_validated.add(revised.id)
+                            if (
+                                failures(checks)
+                                or constraint_failures
+                                or (
+                                    bool(evidence)
+                                    and bool(revised.answer)
+                                    and not revised.citations
+                                )
                             ):
                                 revised = Candidate(
-                                    revised.id, "", 0, "Critical evidence claims remain unresolved."
+                                    revised.id,
+                                    "",
+                                    0,
+                                    "Critical evidence claims or answer constraints remain unresolved.",
                                 )
                         if candidates[-1] != revised:
                             self.store.event(
@@ -217,7 +243,8 @@ class Solver:
                                 "candidate_rejected",
                                 {
                                     "candidate_id": revised.id,
-                                    "reason": "unresolved critical evidence",
+                                    "reason": "unresolved critical evidence or answer constraints",
+                                    "constraint_failures": constraint_failures,
                                 },
                             )
                             candidates.append(revised)
@@ -265,6 +292,26 @@ class Solver:
                 selected = await select(
                     self.jev, self.gateway, q, pool, self.config.selector, self.config.seed
                 )
+                if (
+                    self.config.adaptive
+                    and selected
+                    and selected.answer
+                    and selected.id not in constraint_validated
+                ):
+                    # An independent initial candidate can win selection after
+                    # a failed repair; it must also satisfy the answer constraints.
+                    constraint_failures = await constraints(self.jev, q.id, q.question, selected)
+                    if constraint_failures:
+                        self.store.event(
+                            q.id,
+                            "candidate_rejected",
+                            {
+                                "candidate_id": selected.id,
+                                "reason": "unresolved answer constraints",
+                                "constraint_failures": constraint_failures,
+                            },
+                        )
+                        selected = None
                 self.transition(q.id, Phase.FINAL)
         except BudgetExceeded:
             status, error = "budget_exceeded", "budget limit reached"
@@ -326,10 +373,16 @@ async def run(
             or data_manifest["revision"] != config.dataset_revision
         ):
             raise ValueError("dataset/config identity or content hash mismatch")
+    if split not in {"full", "development", "heldout"}:
+        raise ValueError("unknown internal split")
+    memberships = None
+    if data_manifest:
+        memberships = load_split(
+            question_file.parent / "split.json", questions, data_manifest.get("split_hash")
+        )
     if split != "full":
-        memberships = json.loads((question_file.parent / "split.json").read_text())
-        if split not in memberships:
-            raise ValueError("unknown internal split")
+        if memberships is None:
+            raise ValueError("internal splits require a preparation manifest")
         ids = set(memberships[split])
         questions = [q for q in questions if q.id in ids]
     if not questions:

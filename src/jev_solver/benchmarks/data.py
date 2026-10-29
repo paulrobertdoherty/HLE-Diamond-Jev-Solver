@@ -39,6 +39,27 @@ def load_questions(path: Path) -> list[QuestionView]:
     return questions
 
 
+def load_split(path: Path, questions: list[QuestionView], expected_hash: str | None) -> dict:
+    if not path.exists() or not expected_hash:
+        raise ValueError("missing authenticated dataset split")
+    membership = json.loads(path.read_text())
+    if digest(membership) != expected_hash:
+        raise ValueError("dataset split hash mismatch")
+    if not isinstance(membership, dict) or set(membership) != {"development", "heldout"}:
+        raise ValueError("invalid dataset split structure")
+    for ids in membership.values():
+        if (
+            not isinstance(ids, list)
+            or any(not isinstance(qid, str) for qid in ids)
+            or len(set(ids)) != len(ids)
+        ):
+            raise ValueError("invalid or duplicate dataset split identifiers")
+    development, heldout = set(membership["development"]), set(membership["heldout"])
+    if development & heldout or development | heldout != {q.id for q in questions}:
+        raise ValueError("dataset splits must be disjoint and cover the prepared questions")
+    return membership
+
+
 def image_url(image) -> str:
     if isinstance(image, str):
         if image.startswith(("data:image/", "https://")):

@@ -35,6 +35,8 @@ Preparation downloads `cais/hle-diamond`, split `test`, expects 1,000 original I
 
 To preregister an internal development split, add `--dev-count 200 --seed 17` during preparation. Stratification uses partition labels only inside preparation. Run with `--split development` while tuning, then freeze configuration and use `--split heldout`. Split membership is solver-safe; partition labels are absent from solver inputs. Independent external development data remain preferable. A complete benchmark result after development on some Diamond items is descriptive, not untouched evaluation.
 
+Before dispatch, prepared runs verify `split.json` against the preparation manifest's split hash and require unique, disjoint membership covering every prepared question. This check also applies to full-set runs. Internal split selection requires a preparation manifest.
+
 For independent development tasks, use `prepare --development-file private/checked-tasks.jsonl --output private/development`. Rows use the same question/answer schema as the synthetic fixture but must contain independently checked tasks. Preparation identifies them as `independent/development` and pins their content revision. Set that dataset identity and revision in a live config with `scope: independent-development`. These runs are never exported as Diamond measurements.
 
 ## Build the controlled sandbox
@@ -94,7 +96,7 @@ Move finalized predictions and their manifest to the evaluator environment, with
 jev-solver grade --run private/heldout-j23 --labels private/diamond/evaluator/labels.jsonl --grader-config private/grader.json --output private/evaluation-j23 --oracle
 ```
 
-Grading validates durable finalization, complete declared-ID coverage, prediction integrity and reference preparation hashes before joining labels. Solver failures and abstentions count as incorrect. Grader failures also remain in the denominator and are explicitly counted; rerun `grade` with the same inputs to retry unfinished grading within the original budget. `--oracle` also grades saved candidate answers offline. Those results are never sent into inference.
+Grading validates durable finalization, complete declared-ID coverage, prediction integrity and reference preparation hashes before joining labels. Solver failures and abstentions count as incorrect. Grader failures also remain in the denominator and are explicitly counted; rerun `grade` with the same inputs to retry unfinished grading within the original budget. `--oracle` also grades saved candidate answers offline, including candidates retained from budget failures, timeouts and solver errors. Failed final predictions still count as incorrect. Those results are never sent into inference.
 
 Use identical grader configuration and evaluation membership for all arms. The same-model sampling baseline uses independent calls and deterministic voting. Fixed tool arms share workflow settings, and J2/J3 toggle only their respective judgments. Jfull and M have explicit additional samples and decisions, so compare their total spend as well as equal workload. The M adapter currently supports multiple OpenAI model configurations; a heterogeneous provider implementation is a future protocol adapter.
 

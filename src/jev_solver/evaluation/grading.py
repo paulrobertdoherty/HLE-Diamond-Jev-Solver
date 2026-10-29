@@ -227,22 +227,24 @@ async def grade(
 
         async def one(p):
             qid = p["question_id"]
-            prior = store.cached(qid, "final_grade")
+            # Older final grades omitted oracle labels for failed solves.
+            prior = store.cached(qid, "final_grade_v2")
             if prior is not None:
                 return prior
             confidence = probability(p["confidence"])
             correct, oracle_correct, status = False, None, p["status"]
-            if status == "completed":
-                try:
+            try:
+                if status == "completed":
                     correct = await judge(qid, p["answer"], confidence, p.get("verification", ""))
-                    if oracle:
-                        oracle_correct = correct
-                        for candidate in p["candidate_answers"]:
-                            if not oracle_correct:
-                                oracle_correct = await judge(qid, candidate, 0)
-                except Exception as e:
-                    status = "grader_error"
-                    store.event(qid, "grader_error", {"error_type": type(e).__name__})
+                if oracle:
+                    oracle_correct = correct
+                    for candidate in p["candidate_answers"]:
+                        if not oracle_correct:
+                            oracle_correct = await judge(qid, candidate, 0)
+            except Exception as e:
+                status = "grader_error"
+                oracle_correct = None
+                store.event(qid, "grader_error", {"error_type": type(e).__name__})
             g = record(
                 Grade(
                     qid,
@@ -259,7 +261,7 @@ async def grade(
             )
             # Grader errors stay retryable on a later isolated grade invocation.
             if status != "grader_error":
-                store.cache(qid, "final_grade", g)
+                store.cache(qid, "final_grade_v2", g)
             return g
 
         semaphore = asyncio.Semaphore(eval_config.limits.concurrency)

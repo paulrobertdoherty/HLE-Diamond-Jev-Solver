@@ -5,17 +5,17 @@ import tempfile
 import unittest
 from dataclasses import replace
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from jev_solver.benchmarks.data import prepare
 from jev_solver.config import Config, Limits
 from jev_solver.controller.engine import Solver, run
-from jev_solver.evaluation.analysis import paired, summary
+from jev_solver.evaluation.analysis import diagnostics, paired, summary
 from jev_solver.evaluation.components import components
 from jev_solver.evaluation.export import export_report
 from jev_solver.evaluation.grading import finalized_predictions, grade, official_prompt
-from jev_solver.models import digest
-from jev_solver.providers.backbone import MockBackbone
+from jev_solver.models import QuestionView, digest
+from jev_solver.providers.backbone import MockBackbone, ProviderError
 from jev_solver.retrieval.corpus import Corpus, build_corpus
 from jev_solver.tools.policy import Policy
 from jev_solver.tracing.audit import audit
@@ -84,6 +84,79 @@ class ExperimentTests(unittest.IsolatedAsyncioTestCase):
         factual = next(g for g in rows if g["question_id"] == "synthetic-reference-1")
         self.assertFalse(factual["correct"])
         self.assertTrue(factual["oracle_correct"])
+
+    async def test_oracle_grades_saved_candidates_after_solver_failures(self):
+        original = Solver.research
+
+        for status in ("budget_exceeded", "timeout", "error"):
+            with self.subTest(status=status):
+
+                async def fail_after_initial(solver, q, candidate, expected_status=status):
+                    if expected_status == "timeout":
+                        raise TimeoutError()
+                    if expected_status == "error":
+                        raise ProviderError("source unavailable")
+                    return await original(solver, q, candidate)
+
+                config = replace(Config(), limits=replace(Limits(), calls=1))
+                directory = self.root / status
+                with patch.object(Solver, "research", fail_after_initial):
+                    await run(config, self.questions, directory)
+                await grade(directory, self.labels, self.root / (status + "-eval"), oracle=True)
+                rows = json.loads((self.root / (status + "-eval/grades.json")).read_text())[
+                    "grades"
+                ]
+                self.assertTrue(all(g["status"] == status and not g["correct"] for g in rows))
+                arithmetic = next(g for g in rows if g["question_id"] == "synthetic-arithmetic-1")
+                factual = next(g for g in rows if g["question_id"] == "synthetic-reference-1")
+                self.assertTrue(arithmetic["oracle_correct"])
+                self.assertFalse(factual["oracle_correct"])
+                self.assertEqual(diagnostics(rows)["oracle_labeled_count"], 4)
+                self.assertEqual(diagnostics(rows)["oracle_selection_gap"], 0.75)
+
+    async def test_prepared_split_hash_is_checked_before_dispatch(self):
+        split_path = self.questions.parent / "split.json"
+        memberships = json.loads(split_path.read_text())
+        memberships["development"] = [memberships["heldout"][0]]
+        split_path.write_text(json.dumps(memberships))
+        with patch.object(Solver, "solve", new_callable=AsyncMock) as solve:
+            for split in ("heldout", "full"):
+                with self.subTest(split=split), self.assertRaisesRegex(ValueError, "split hash"):
+                    await run(Config(), self.questions, self.root / split, split=split)
+            solve.assert_not_awaited()
+        self.assertFalse((self.root / "heldout").exists())
+
+    async def test_split_structure_disjointness_and_coverage_are_required(self):
+        split_path = self.questions.parent / "split.json"
+        ids = json.loads(split_path.read_text())["heldout"]
+        manifest_path = self.questions.parent / "manifest.json"
+        manifest = json.loads(manifest_path.read_text())
+        for membership in (
+            {"development": [ids[0]], "heldout": ids},
+            {"development": [], "heldout": ids[:-1]},
+            {"development": [], "heldout": [*ids, "unknown"]},
+            {"development": [], "heldout": [*ids, ids[0]]},
+            {"development": [], "heldout": ids, "extra": []},
+            {"development": [], "heldout": "not a list"},
+            {"development": [], "heldout": [*ids, 123]},
+        ):
+            with self.subTest(membership=membership):
+                split_path.write_text(json.dumps(membership))
+                manifest_path.write_text(json.dumps({**manifest, "split_hash": digest(membership)}))
+                with self.assertRaisesRegex(ValueError, "split"):
+                    await run(
+                        Config(), self.questions, self.root / "invalid-split", split="heldout"
+                    )
+
+    async def test_valid_development_and_heldout_splits_select_the_declared_ids(self):
+        prepare(self.root / "split-data", "", Path("tests/fixtures/tasks.jsonl"), dev_count=1)
+        questions = self.root / "split-data/solver/questions.jsonl"
+        memberships = json.loads((questions.parent / "split.json").read_text())
+        for split, ids in memberships.items():
+            await run(Config(arm="B0", track="closed"), questions, self.root / split, split=split)
+            manifest, predictions = finalized_predictions(self.root / split)
+            self.assertEqual(set(manifest["declared_ids"]), set(ids))
+            self.assertEqual({p["question_id"] for p in predictions}, set(ids))
 
     async def test_baselines_and_jev_ablation_matrix(self):
         for arm in ("b0", "b1", "b2", "j2", "j3", "j23", "jfull", "m"):
@@ -291,6 +364,175 @@ class ExperimentTests(unittest.IsolatedAsyncioTestCase):
         corpus_file.write_text(json.dumps(content))
         with self.assertRaises(ValueError):
             Corpus(corpus_file, policy)
+
+
+class ControllerRegressionTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.solver_count = 0
+
+    def solver(self, config):
+        self.solver_count += 1
+        store = Store(self.root / f"{self.solver_count}.sqlite3")
+        self.addCleanup(store.close)
+        solver = Solver(config, store, "regression")
+        self.addAsyncCleanup(solver.close)
+        return solver
+
+    def three_queries(self, solver, contexts):
+        original = MockBackbone.generate
+
+        async def generate(backbone, q, context, schema):
+            response = await original(backbone, q, context, schema)
+            if context["task"] == "independent initial solution":
+                candidate = json.loads(response["text"])
+                candidate["queries"] = ["cobalt fact one", "cobalt fact two", "cobalt fact three"]
+                response["text"] = json.dumps(candidate)
+            else:
+                contexts.append(context)
+            return response
+
+        async def search(query):
+            return [
+                {"url": f"https://example.org/{digest(query)[:8]}/{i}", "title": "Reference"}
+                for i in range(3)
+            ]
+
+        solver.web.backend.search = AsyncMock(side_effect=search)
+        return patch.object(MockBackbone, "generate", generate)
+
+    async def test_tool_caps_keep_evidence_and_allow_final_revision(self):
+        for limits, expected in (
+            (replace(Limits(), rounds=1), {"fetch": 8, "search": 3, "model": 2}),
+            (replace(Limits(), rounds=1, search=1), {"fetch": 3, "search": 1, "model": 2}),
+        ):
+            with self.subTest(limits=limits):
+                solver = self.solver(Config(arm="B2", limits=limits))
+                contexts = []
+                with self.three_queries(solver, contexts):
+                    result = await solver.solve(
+                        QuestionView("q", "What is the fictional cobalt code?")
+                    )
+                self.assertEqual(result.status, "completed")
+                self.assertEqual(result.answer, "27")
+                self.assertTrue(contexts[0]["evidence"])
+                self.assertEqual(solver.budget.snapshot("q")["counts"], expected)
+
+    async def test_cached_research_replays_after_fetch_cap_is_reached(self):
+        config = Config(arm="B2", limits=replace(Limits(), rounds=1))
+        solver = self.solver(config)
+        generate = solver.gateway.generate
+
+        async def interrupt_before_revision(q, context, phase, **kwargs):
+            if phase == "revise-0":
+                raise asyncio.CancelledError()
+            return await generate(q, context, phase, **kwargs)
+
+        contexts = []
+        question = QuestionView("q", "What is the fictional cobalt code?")
+        with self.three_queries(solver, contexts):
+            with patch.object(solver.gateway, "generate", interrupt_before_revision):
+                with self.assertRaises(asyncio.CancelledError):
+                    await solver.solve(question)
+            self.assertEqual(solver.budget.snapshot("q")["counts"]["fetch"], 8)
+            resumed = Solver(config, solver.store, "regression")
+            self.addAsyncCleanup(resumed.close)
+            resumed.web.backend.search = AsyncMock(side_effect=AssertionError("search replay"))
+            resumed.web.backend.fetch = AsyncMock(side_effect=AssertionError("fetch replay"))
+            result = await resumed.solve(question)
+        self.assertEqual(result.status, "completed")
+        self.assertEqual(result.answer, "27")
+        self.assertTrue(contexts[0]["evidence"])
+        self.assertEqual(resumed.budget.snapshot("q")["counts"]["fetch"], 8)
+        resumed.web.backend.search.assert_not_awaited()
+        resumed.web.backend.fetch.assert_not_awaited()
+
+    async def test_retry_exhausting_fetch_cap_keeps_earlier_evidence(self):
+        solver = self.solver(Config(arm="B2", limits=replace(Limits(), rounds=1, fetch=2)))
+        page = await solver.web.backend.fetch("https://example.org/source", solver.policy)
+        solver.web.backend.fetch = AsyncMock(
+            side_effect=[page, ProviderError("temporary failure", retryable=True)]
+        )
+        with self.three_queries(solver, []):
+            result = await solver.solve(QuestionView("q", "What is the fictional cobalt code?"))
+        self.assertEqual(result.status, "completed")
+        self.assertEqual(result.answer, "27")
+        self.assertEqual(solver.budget.snapshot("q")["counts"]["fetch"], 2)
+
+    async def test_research_still_halts_at_total_call_and_dollar_caps(self):
+        for config in (
+            Config(arm="B2", limits=replace(Limits(), rounds=1, calls=4)),
+            Config(arm="B2", fetch_usd=0.7, limits=replace(Limits(), rounds=1, item_usd=1)),
+        ):
+            with self.subTest(config=config):
+                solver = self.solver(config)
+                with self.three_queries(solver, []):
+                    result = await solver.solve(
+                        QuestionView("q", "What is the fictional cobalt code?")
+                    )
+                self.assertEqual(result.status, "budget_exceeded")
+                self.assertEqual(result.answer, "")
+
+    async def test_persistent_constraints_reject_repair_and_unchecked_initial_candidates(self):
+        for constraint in ("units", "scope", "assumptions", "consistency"):
+            for candidates in (1, 3):
+                with self.subTest(constraint=constraint, candidates=candidates):
+                    solver = self.solver(
+                        Config(
+                            arm="Jfull",
+                            adaptive=True,
+                            limits=replace(Limits(), candidates=candidates, rounds=1),
+                        )
+                    )
+                    checker = AsyncMock(return_value=[constraint])
+                    with (
+                        patch("jev_solver.controller.engine.route", AsyncMock(return_value="code")),
+                        patch("jev_solver.controller.engine.constraints", checker),
+                    ):
+                        result = await solver.solve(
+                            QuestionView("q", "What is 6 * 7? Include metres.")
+                        )
+                    self.assertEqual(result.status, "completed")
+                    self.assertEqual(result.answer, "")
+                    self.assertTrue(result.abstained)
+                    self.assertIn("42", result.candidate_answers)
+                    self.assertEqual(checker.await_args_list[1].args[-1].id, "repair-0")
+                    self.assertEqual(checker.await_count, 2 if candidates == 1 else 3)
+                    rejected = [
+                        json.loads(row[0])
+                        for row in solver.store.db.execute(
+                            "SELECT data FROM events WHERE kind='candidate_rejected'"
+                        )
+                    ]
+                    self.assertEqual(rejected[0]["constraint_failures"], [constraint])
+
+    async def test_repair_that_passes_constraints_is_accepted(self):
+        solver = self.solver(
+            Config(arm="Jfull", adaptive=True, limits=replace(Limits(), candidates=1, rounds=1))
+        )
+        checker = AsyncMock(side_effect=[["units"], []])
+        original = MockBackbone.generate
+
+        async def repair_units(backbone, q, context, schema):
+            response = await original(backbone, q, context, schema)
+            if context.get("constraint_failures"):
+                candidate = json.loads(response["text"])
+                candidate["answer"] = "42 m"
+                response["text"] = json.dumps(candidate)
+            return response
+
+        with (
+            patch("jev_solver.controller.engine.route", AsyncMock(return_value="code")),
+            patch("jev_solver.controller.engine.constraints", checker),
+            patch.object(MockBackbone, "generate", repair_units),
+        ):
+            result = await solver.solve(QuestionView("q", "What is 6 * 7? Include metres."))
+        self.assertEqual(result.status, "completed")
+        self.assertEqual(result.answer, "42 m")
+        self.assertEqual(checker.await_count, 2)
+        self.assertEqual(checker.await_args_list[1].args[-1].answer, "42 m")
 
 
 class AnalysisTests(unittest.TestCase):

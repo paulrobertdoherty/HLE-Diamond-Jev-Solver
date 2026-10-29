@@ -107,7 +107,7 @@ class LiveWeb:
         redirects = []
         async with httpx.AsyncClient(timeout=30, trust_env=False, follow_redirects=False) as client:
             for _ in range(6):
-                policy.url(url)
+                url = policy.url(url)
                 parts = urlsplit(url)
                 host = parts.hostname
                 addresses = await asyncio.to_thread(
@@ -128,8 +128,7 @@ class LiveWeb:
                     extensions={"sni_hostname": host},
                 ) as response:
                     if response.status_code in {301, 302, 303, 307, 308}:
-                        url = urljoin(url, response.headers["location"])
-                        policy.url(url)
+                        url = policy.url(urljoin(url, response.headers["location"]))
                         redirects.append(url)
                         continue
                     if response.status_code != 200:
@@ -260,7 +259,7 @@ class AuditedWeb:
             }
         )
         try:
-            self.policy.url(url)
+            url = self.policy.url(url)
             cached = self.store.cached(item, key)
             replay = cached is not None
             if not replay:

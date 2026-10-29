@@ -18,7 +18,25 @@ class Blocked(ValueError):
 
 
 def normalized_url(url: str) -> str:
-    return re.sub(r"^(?:https?://)?(?:www\.)?", "", url.strip(), flags=re.I).lower()
+    value = re.sub(r"^https?://", "", url.strip(), flags=re.I).lstrip("/")
+    parts = urlsplit("https://" + value)
+    host = (parts.hostname or "").lower().rstrip(".").removeprefix("www.")
+    path = remove_dot_segments(parts.path)
+    return (host + path + ("?" + parts.query if parts.query else "")).lower()
+
+
+def remove_dot_segments(path: str) -> str:
+    """Normalize absolute URL paths, preserving repeated and trailing slashes."""
+    segments = []
+    for segment in path.split("/"):
+        if segment == "..":
+            if len(segments) > 1:
+                segments.pop()
+        elif segment != ".":
+            segments.append(segment)
+    if path.endswith(("/.", "/..")):
+        segments.append("")
+    return "/".join(segments)
 
 
 def decoded(text: str) -> str:
@@ -114,7 +132,23 @@ class Policy:
         for target in hosts:
             if any(host_matches(target.lower().rstrip("."), domain) for domain in self.domains):
                 raise Blocked("blocked_domain:" + target)
-        targets = [value] + re.findall(r"https?://[^\s<>\"']+", value, re.I)
+        # Inspect each decoding layer: reserved delimiters can change where a
+        # path ends. Look ahead to inspect nested proxy/archive targets as well.
+        targets = []
+        source = url.strip()
+        for _ in range(9):  # decoded() above has already enforced the depth limit.
+            targets.append(source)
+            targets.extend(
+                re.findall(
+                    r"(?=(?:^|[/?=&])((?:https?://)?(?:[\w-]+\.)+[\w-]+\.?(?::\d+)?/[^\s<>\"']*))",
+                    source,
+                    re.I,
+                )
+            )
+            next_source = unquote(source)
+            if next_source == source:
+                break
+            source = next_source
         for target in targets:
             norm = normalized_url(target)
             for prefix in self.rules["url_prefixes"]:
@@ -128,7 +162,10 @@ class Policy:
                 if pattern.search(norm):
                     raise Blocked("serp_url:" + pattern.pattern)
         self.text(value)
-        return url
+        # Preserve escaping and query semantics on the wire. Decoded paths above
+        # are also checked because servers may decode before resolving dot segments.
+        original = urlsplit(url.strip())
+        return original._replace(path=remove_dot_segments(original.path)).geturl()
 
     def result(self, result: dict):
         self.url(result["url"])

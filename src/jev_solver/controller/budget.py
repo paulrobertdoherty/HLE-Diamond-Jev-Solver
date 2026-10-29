@@ -13,6 +13,12 @@ class BudgetExceeded(RuntimeError):
     pass
 
 
+class CallLimitExceeded(BudgetExceeded):
+    def __init__(self, kind: str):
+        super().__init__(f"{kind} call limit")
+        self.kind = kind
+
+
 class Budget:
     """Reservations survive crashes. Uncertain charges consume their full reservation."""
 
@@ -38,8 +44,10 @@ class Budget:
                     )
                 )
                 cap = getattr(limits, kind, limits.calls)
-                if counts.get(kind, 0) >= cap or sum(counts.values()) >= limits.calls:
+                if sum(counts.values()) >= limits.calls:
                     raise BudgetExceeded("call limit")
+                if counts.get(kind, 0) >= cap:
+                    raise CallLimitExceeded(kind)
                 reserve = 0 if final else limits.finalization_usd
                 if self.store.cost(item) + amount + reserve > limits.item_usd + 1e-12:
                     raise BudgetExceeded("item dollar cap")
