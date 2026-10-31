@@ -25,6 +25,8 @@ class ProviderConfig:
     structured_output: bool = True
     reasoning_effort: str = "medium"
     temperature: float | None = None
+    openrouter_provider: str = ""
+    request_timeout_s: float = 120
 
 
 @dataclass(frozen=True)
@@ -154,13 +156,20 @@ class Config:
                 raise ValueError("tool charges must be finite and nonnegative")
         providers = (self.provider, self.jev, *self.additional_providers)
         for p in providers:
-            if p.kind not in {"mock", "openai", "typesafe"}:
+            if (
+                isinstance(p.request_timeout_s, bool)
+                or not isinstance(p.request_timeout_s, (int, float))
+                or not math.isfinite(p.request_timeout_s)
+                or p.request_timeout_s <= 0
+            ):
+                raise ValueError("positive finite provider request timeout required")
+            if p.kind not in {"mock", "openai", "openrouter", "typesafe"}:
                 raise ValueError("unsupported provider protocol")
-            if p.kind != "mock" and (
+            if p.kind not in {"mock", "openrouter"} and (
                 not p.model or re.search(r"latest|preview|<|>", p.model, re.I)
             ):
                 raise ValueError("explicit pinned model required")
-            if p.kind != "mock" and p.input_per_million <= 0:
+            if p.kind not in {"mock", "openrouter"} and p.input_per_million <= 0:
                 raise ValueError("explicit nonzero input price required for live providers")
             if any(
                 not math.isfinite(v) or v < 0 for v in (p.input_per_million, p.output_per_million)
@@ -177,13 +186,42 @@ class Config:
                 raise ValueError("use an exact versioned Jev model")
             if p.kind == "openai" and not re.search(r"-\d{4}-\d{2}-\d{2}$", p.model):
                 raise ValueError("reported OpenAI experiments require a dated model snapshot")
+            if p.kind == "openrouter":
+                if (
+                    not isinstance(p.model, str)
+                    or not re.fullmatch(r"[\w.-]+/[\w.:-]+", p.model, re.ASCII)
+                    or p.model.startswith("openrouter/")
+                    or ":online" in p.model
+                ):
+                    raise ValueError(
+                        "use an explicit OpenRouter author/model ID without web routing"
+                    )
+                if p.reasoning_effort not in {
+                    "",
+                    "none",
+                    "minimal",
+                    "low",
+                    "medium",
+                    "high",
+                    "xhigh",
+                    "max",
+                }:
+                    raise ValueError("unsupported OpenRouter reasoning effort")
+            if not isinstance(p.openrouter_provider, str) or (
+                p.openrouter_provider
+                and (
+                    p.kind != "openrouter"
+                    or not re.fullmatch(r"[\w./-]+", p.openrouter_provider, re.ASCII)
+                )
+            ):
+                raise ValueError("openrouter_provider requires an OpenRouter provider slug")
         if self.provider.kind == "typesafe" or any(
             p.kind == "typesafe" for p in self.additional_providers
         ):
             raise ValueError("Jev is a judge, not a generative backbone")
         if self.jev.kind not in {"mock", "typesafe"}:
             raise ValueError("Jev adapter requires typesafe or mock")
-        if not self.provider.structured_output:
+        if any(not p.structured_output for p in (self.provider, *self.additional_providers)):
             raise ValueError("backbone must support validated structured responses")
         if self.live:
             if self.dataset not in {
@@ -221,6 +259,14 @@ class Config:
     @classmethod
     def load(cls, path: str | Path) -> Config:
         row = json.loads(Path(path).read_text())
+        for p in (row.get("provider", {}), *row.get("additional_providers", [])):
+            if p.get("kind") == "openrouter" and not {
+                "input_per_million",
+                "output_per_million",
+            } <= set(p):
+                raise ValueError(
+                    "OpenRouter requires explicit prices (zero is allowed for free models)"
+                )
         if row.get("provider", {}).get("kind", "mock") != "mock":
             if not {"item_usd", "run_usd"} <= set(row.get("limits", {})):
                 raise ValueError("live runs require explicit per-item and total-run dollar caps")

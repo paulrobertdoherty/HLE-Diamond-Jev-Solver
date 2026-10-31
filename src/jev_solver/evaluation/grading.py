@@ -112,10 +112,17 @@ async def grade(
     elif not manifest["synthetic"]:
         raise ValueError("live grading requires a label preparation manifest")
     if not manifest["synthetic"]:
-        if grader is None or grader.provider.kind != "openai":
-            raise ValueError("live evaluation requires an explicit separate OpenAI grader config")
-        if not os.environ.get("GRADER_OPENAI_API_KEY"):
-            raise ValueError("GRADER_OPENAI_API_KEY required; solver credentials are not reused")
+        if grader is None or grader.provider.kind not in {"openai", "openrouter"}:
+            raise ValueError(
+                "live evaluation requires a separate OpenAI or OpenRouter grader config"
+            )
+        credential = (
+            "GRADER_OPENROUTER_API_KEY"
+            if grader.provider.kind == "openrouter"
+            else "GRADER_OPENAI_API_KEY"
+        )
+        if not os.environ.get(credential):
+            raise ValueError(f"{credential} required; solver credentials are not reused")
         grader.validate()
     verify_protocol("protocol/manifest.json")
     if output.resolve() == run.resolve() or run.resolve() in output.resolve().parents:
@@ -135,11 +142,20 @@ async def grade(
     try:
         store.meta("identity", identity)
         if not manifest["synthetic"]:
-            from openai import AsyncOpenAI
+            if eval_config.provider.kind == "openrouter":
+                from ..providers.openrouter import OpenRouterBackbone
 
-            client = AsyncOpenAI(
-                api_key=os.environ["GRADER_OPENAI_API_KEY"], max_retries=0, timeout=120
-            )
+                client = OpenRouterBackbone(
+                    eval_config.provider, api_key=os.environ["GRADER_OPENROUTER_API_KEY"]
+                )
+            else:
+                from openai import AsyncOpenAI
+
+                client = AsyncOpenAI(
+                    api_key=os.environ["GRADER_OPENAI_API_KEY"],
+                    max_retries=0,
+                    timeout=eval_config.provider.request_timeout_s,
+                )
 
         async def judge(qid: str, answer: str, confidence: float, verification: str = "") -> bool:
             if not answer:
@@ -168,6 +184,12 @@ async def grade(
                     raise ValueError("grader input exceeds token envelope")
 
                 async def call():
+                    if eval_config.provider.kind == "openrouter":
+                        return await client.complete(
+                            [{"role": "user", "content": prompt}],
+                            GRADER_SCHEMA,
+                            name="official_grade",
+                        )
                     try:
                         response = await client.responses.create(
                             model=eval_config.provider.model,

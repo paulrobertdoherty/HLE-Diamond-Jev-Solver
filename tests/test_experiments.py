@@ -33,6 +33,31 @@ class ExperimentTests(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self):
         self.tmp.cleanup()
 
+    async def test_selected_question_run_is_finalized_and_rejects_invalid_selection(self):
+        questions = [json.loads(line) for line in self.questions.read_text().splitlines()]
+        selected = questions[0]["id"]
+        await run(Config(), self.questions, self.root / "selected", question_ids=(selected,))
+        manifest, predictions = finalized_predictions(self.root / "selected")
+        self.assertEqual(manifest["count"], 1)
+        self.assertEqual(manifest["declared_ids"], [selected])
+        self.assertEqual([p["question_id"] for p in predictions], [selected])
+        for selection in ((selected, selected), ("not-in-dataset",)):
+            with self.subTest(selection=selection), self.assertRaises(ValueError):
+                await run(Config(), self.questions, self.root / "invalid", question_ids=selection)
+        self.assertFalse((self.root / "invalid").exists())
+
+    async def test_question_selection_cannot_bypass_the_declared_split(self):
+        prepare(self.root / "split-data", "", Path("tests/fixtures/tasks.jsonl"), dev_count=2)
+        membership = json.loads((self.root / "split-data/solver/split.json").read_text())
+        with self.assertRaisesRegex(ValueError, "declared split"):
+            await run(
+                Config(),
+                self.root / "split-data/solver/questions.jsonl",
+                self.root / "wrong-split",
+                split="development",
+                question_ids=(membership["heldout"][0],),
+            )
+
     async def test_independent_development_preparation_and_identity(self):
         from jev_solver.cli import execute, parser
 

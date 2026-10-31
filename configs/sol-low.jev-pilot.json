@@ -1,0 +1,57 @@
+{
+  "arm": "J23",
+  "track": "controlled",
+  "dataset": "cais/hle-diamond",
+  "dataset_revision": "04eeb7efa7e3e4f83a00cbd5ce436a38fd5dda23",
+  "scope": "Same 50-question internal stratified development split as Sol low B0; seed=17; budget-limited Jev evidence pilot; use --split development",
+  "seed": 17,
+  "primary_comparison": "Descriptive J23 versus existing B0; includes tools and extra inference, does not isolate Jev",
+  "provider": {
+    "kind": "openrouter",
+    "model": "openai/gpt-6.1-sol",
+    "openrouter_provider": "",
+    "input_per_million": 2.0,
+    "output_per_million": 10.0,
+    "max_input_tokens": 65536,
+    "max_output_tokens": 8192,
+    "vision": true,
+    "structured_output": true,
+    "reasoning_effort": "low",
+    "request_timeout_s": 300
+  },
+  "limits": {
+    "item_usd": 1.25,
+    "run_usd": 10,
+    "deadline_s": 600,
+    "candidates": 1,
+    "rounds": 1,
+    "search": 2,
+    "fetch": 4,
+    "code": 1,
+    "calls": 45,
+    "retries": 0,
+    "concurrency": 2,
+    "finalization_usd": 0.22
+  },
+  "jev": {
+    "kind": "typesafe",
+    "model": "jev-1.14.0",
+    "input_per_million": 0.042,
+    "output_per_million": 0,
+    "max_input_tokens": 64000,
+    "max_output_tokens": 4096,
+    "vision": false,
+    "request_timeout_s": 120
+  },
+  "search_backend": "brave",
+  "search_usd": 0.005,
+  "fetch_usd": 0,
+  "code_usd": 0,
+  "sandbox_image": "sha256:2a3462f8a037dd41eee5eb6f9dac0a8bb2c752950ec5412d149e4d5118b55cd8",
+  "jev_failure": "fail",
+  "selector": "vote",
+  "adaptive": false,
+  "departures": [
+    "One initial candidate and one tool/revision round per question for an inexpensive exploratory pilot."
+  ]
+}

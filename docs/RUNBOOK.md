@@ -64,11 +64,11 @@ Before a live run, explicitly set `limits.item_usd` and `limits.run_usd`. SDK re
 
 Set only the solver credentials in its environment:
 
-- `OPENAI_API_KEY`
-- `TYPESAFE_API_KEY`
-- `BRAVE_SEARCH_API_KEY`
+- `OPENAI_API_KEY` for an OpenAI backbone, or `OPENROUTER_API_KEY` for an OpenRouter backbone (both if mixing them in M).
+- `TYPESAFE_API_KEY` for Jev arms or Jev selection/retrieval.
+- `BRAVE_SEARCH_API_KEY` for live tool arms.
 
-No environment files are automatically sourced. `HF_TOKEN` is only needed for preparation. `GRADER_OPENAI_API_KEY` belongs in the evaluator environment.
+No environment files are automatically sourced. `HF_TOKEN` is only needed for preparation. `GRADER_OPENAI_API_KEY` or `GRADER_OPENROUTER_API_KEY` belongs in the evaluator environment.
 
 ```bash
 jev-solver validate --config private/live.json
@@ -88,9 +88,54 @@ jev-solver resume --config private/live.json --questions private/diamond/solver/
 
 A run lock prevents simultaneous writers. Finalized items are never solved again; partial items deterministically replay cached calls and reapply filtering. An in-flight request interrupted before its response is durably cached may need another attempt; its original maximum charge remains in the budget. Deadlines start at the first attempt and include downtime. Changed inputs, code, dependencies or policies require a new run directory. Completed errors and abstentions remain part of the declared evaluation set.
 
+### OpenRouter models
+
+Install the existing API and dataset extras, prepare HLE-Diamond as described above, and make a private configuration:
+
+```bash
+uv sync --locked --extra api --extra data --extra dev
+source .venv/bin/activate
+mkdir -p private
+cp configs/openrouter.template.json private/openrouter.json
+read -rsp 'OpenRouter API key: ' OPENROUTER_API_KEY
+export OPENROUTER_API_KEY
+```
+
+Edit `private/openrouter.json` before running:
+
+- Set `provider.model` to an explicit OpenRouter `author/model` ID. Open source and preview models are accepted without OpenAI's dated-snapshot rule. Auto/free routers, presets and `:online` web variants are rejected; a specific model's `:free` variant is allowed. The returned model ID must match the configured ID; use the canonical ID if an alias returns a different name.
+- Set `input_per_million` and `output_per_million` to verified USD rates per million tokens. Both fields are required; zero is allowed for free endpoints. These rates also set OpenRouter's provider price ceilings. Template rates are illustrative.
+- Set token limits and `vision` for the model. The model and its host must support strict JSON Schema output (`structured_output: true`). The adapter requires parameter support rather than silently dropping schema constraints. For a text-only model, prepare with `--text-only`, set `vision: false`, and declare the subset in `scope`.
+- Leave `reasoning_effort` as `""` to use the model's default, or set a supported effort such as `"low"`, `"medium"` or `"high"`. Unsupported settings fail at the API. Optional `temperature` is omitted unless configured. Reasoning tokens count toward output usage; allow enough output tokens for reasoning and the final JSON.
+- For long reasoning requests, increase `provider.request_timeout_s` (default 120 seconds) along with `limits.deadline_s`. The request timeout controls HTTP inactivity; the item deadline bounds the whole solve including retries.
+- Optionally set `openrouter_provider` to a host slug from the model's OpenRouter page to restrict requests to that host with fallbacks disabled. An empty string allows OpenRouter to route among hosts of the same model within your price ceilings. The responding host and generation ID are saved in private traces.
+- Replace `dataset_revision` with the exact prepared commit and declare `scope`. Keep explicit item/run dollar caps appropriate for your pilot.
+
+The template uses B0, so only `OPENROUTER_API_KEY` is needed during solving. B1 also requires no Jev, search key or sandbox. B2 adds Brave search and the pinned Docker sandbox; Jev arms additionally need `TYPESAFE_API_KEY`. You can use OpenRouter in the main `provider` and in M's `additional_providers`, including alongside direct OpenAI models.
+
+With the dataset already prepared in `private/diamond`:
+
+```bash
+jev-solver validate --config private/openrouter.json
+jev-solver estimate --config private/openrouter.json --items 1000
+jev-solver run --config private/openrouter.json --questions private/diamond/solver/questions.jsonl --output private/openrouter-model-a
+```
+
+For another model, change the model, rates, token limits and capabilities, and choose a new run directory. Resume always requires the original configuration. Model slugs can change upstream even when their names stay the same; freeze versioned models and host settings where available for reported comparisons. Validation and estimation are offline and do not verify account access or model capabilities.
+
+The adapter sends no native tools and explicitly disables web search, response healing, context compression and other output-changing plugins. Account or organization settings that prevent plugin overrides must also leave these disabled for controlled comparisons. It preserves original images, requests strict structured output, excludes reasoning text from returned artifacts, and rejects truncation, refusals, tool calls and changed models. Usage is settled before these completion failures are rejected. Missing or invalid usage retains the full reservation; transport failures use the supervisor's bounded retries. Accounting uses the larger of the configured token-rate estimate and OpenRouter's reported cost when present, so a higher reported charge triggers the existing overrun stop. This is conservative accounting, not invoice reconciliation.
+
+Live grading supports `provider.kind: openai` or `openrouter` in a separate grader configuration. Set `GRADER_OPENAI_API_KEY` or `GRADER_OPENROUTER_API_KEY`, respectively, in the evaluator environment. The grader never implicitly reads solver credential variables. OpenRouter grading sends question text, reference answers and saved responses to the chosen external judge; authorize that disclosure before running it. Use the same provider fields, explicit prices and budget limits as other live configurations.
+
+API contract references: [Chat Completions](https://openrouter.ai/docs/api/reference/overview), [structured outputs](https://openrouter.ai/docs/guides/features/structured-outputs), [provider selection and price ceilings](https://openrouter.ai/docs/guides/routing/provider-selection), and [reasoning tokens](https://openrouter.ai/docs/guides/best-practices/reasoning-tokens).
+
+For an accuracy-first GPT-6 Astra B0 run, `configs/astra.openrouter.template.json` sets `openai/gpt-6-astra`, `max` effort, 128,000 output tokens, image support, no temperature override, a one-hour HTTP timeout and a 7,500-second item deadline. Input is bounded to 65,536 tokens, comfortably below the model's long-context price threshold. Same-model host routing stays enabled for availability. This is a suggested starting configuration, not a measured optimum on HLE-Diamond. It uses standard execution; the Chat Completions adapter does not configure OpenAI's Responses-only pro mode.
+
+Prices checked on 2026-10-30: $10/M input and $50/M output, from [OpenRouter's model page](https://openrouter.ai/openai/gpt-6-astra); [official OpenAI documentation](https://developers.openai.com/api/docs/models/gpt-6-astra) confirms `max` effort and the 128,000 output limit. At those configured rates the harness reserves $7.05536 per attempt. The template's $16/item and $16,000/run caps accommodate 1,000 questions and one retry per item; these are conservative caps, not expected spend, and exclude separate grading. Copy to an ignored private path and set the dataset revision, scope and a budget you intend to use before running. A pilot should use a separately prepared development split and its own run directory/cap; do not report a full-set score from a run whose cap prevents finishing items. Compare `xhigh` and `max` on development data before freezing held-out settings.
+
 ## Grading and paired analysis
 
-Move finalized predictions and their manifest to the evaluator environment, with reference storage unavailable to solver tools. Copy and configure `configs/grader.template.json`, with a separately pinned grader and explicit evaluator budgets. Set `GRADER_OPENAI_API_KEY` there. Grading reads the official prompt literal from the hash-pinned upstream file without importing its executable code, and adapts the official structured grading fields to Responses. This is a documented custom transport adaptation, not the upstream CLI.
+Move finalized predictions and their manifest to the evaluator environment, with reference storage unavailable to solver tools. Copy and configure `configs/grader.template.json`, with a separately pinned grader and explicit evaluator budgets. Set `GRADER_OPENAI_API_KEY` there for direct OpenAI grading. For OpenRouter, set `provider.kind: openrouter`, an explicit `author/model` ID and verified prices, and provide `GRADER_OPENROUTER_API_KEY`. Grading reads the official prompt literal from the hash-pinned upstream file without importing its executable code, and adapts the official structured grading fields to OpenAI Responses or OpenRouter Chat Completions. The solver system prompt is not used for grading. This is a documented custom transport adaptation, not the upstream CLI.
 
 ```bash
 jev-solver grade --run private/heldout-j23 --labels private/diamond/evaluator/labels.jsonl --grader-config private/grader.json --output private/evaluation-j23 --oracle
@@ -98,7 +143,9 @@ jev-solver grade --run private/heldout-j23 --labels private/diamond/evaluator/la
 
 Grading validates durable finalization, complete declared-ID coverage, prediction integrity and reference preparation hashes before joining labels. Solver failures and abstentions count as incorrect. Grader failures also remain in the denominator and are explicitly counted; rerun `grade` with the same inputs to retry unfinished grading within the original budget. `--oracle` also grades saved candidate answers offline, including candidates retained from budget failures, timeouts and solver errors. Failed final predictions still count as incorrect. Those results are never sent into inference.
 
-Use identical grader configuration and evaluation membership for all arms. The same-model sampling baseline uses independent calls and deterministic voting. Fixed tool arms share workflow settings, and J2/J3 toggle only their respective judgments. Jfull and M have explicit additional samples and decisions, so compare their total spend as well as equal workload. The M adapter currently supports multiple OpenAI model configurations; a heterogeneous provider implementation is a future protocol adapter.
+For an explicitly requested single-question retest, `run` and `resume` accept repeatable `--question-id ORIGINAL_ID` arguments. Selection is restricted to the declared `--split`, and the selected question hash and IDs are frozen into the new run identity. Use a new output directory and declare the retest scope. Keep the original finalized predictions and grades; report an original score separately from any score with a retest substituted. Finish retesting before exposing reference labels to the evaluator.
+
+Use identical grader configuration and evaluation membership for all arms. The same-model sampling baseline uses independent calls and deterministic voting. Fixed tool arms share workflow settings, and J2/J3 toggle only their respective judgments. Jfull and M have explicit additional samples and decisions, so compare their total spend as well as equal workload. The M adapter supports multiple OpenAI and/or OpenRouter model configurations under the same shared budget.
 
 ```bash
 jev-solver compare --arm-a private/evaluation-j23/grades.json --arm-b private/evaluation-b2/grades.json --output private/comparison.json

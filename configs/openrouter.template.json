@@ -1,0 +1,29 @@
+{
+  "arm": "B0",
+  "track": "closed",
+  "dataset": "cais/hle-diamond",
+  "dataset_revision": "REPLACE_WITH_EXACT_HF_COMMIT",
+  "scope": "REPLACE_WITH_DECLARED_SCOPE",
+  "provider": {
+    "kind": "openrouter",
+    "model": "<AUTHOR/MODEL_ID>",
+    "openrouter_provider": "",
+    "input_per_million": 2.0,
+    "output_per_million": 8.0,
+    "max_input_tokens": 65536,
+    "max_output_tokens": 4096,
+    "vision": true,
+    "structured_output": true,
+    "reasoning_effort": ""
+  },
+  "limits": {
+    "item_usd": 2,
+    "run_usd": 20,
+    "deadline_s": 600,
+    "candidates": 1,
+    "calls": 4,
+    "retries": 1,
+    "concurrency": 2,
+    "finalization_usd": 0
+  }
+}

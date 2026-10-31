@@ -87,7 +87,7 @@ class OpenAIBackbone:
         if client is None:
             from openai import AsyncOpenAI
 
-            client = AsyncOpenAI(max_retries=0, timeout=120)
+            client = AsyncOpenAI(max_retries=0, timeout=config.request_timeout_s)
         self.client = client
 
     async def generate(self, question: QuestionView, context: dict, schema: dict) -> dict:
@@ -234,7 +234,11 @@ def make_backbone(config: ProviderConfig) -> Backbone:
         return MockBackbone(config)
     if config.kind == "openai":
         return OpenAIBackbone(config)
-    raise ValueError("backbone protocol is not implemented; use openai or mock")
+    if config.kind == "openrouter":
+        from .openrouter import OpenRouterBackbone
+
+        return OpenRouterBackbone(config)
+    raise ValueError("backbone protocol is not implemented; use openai, openrouter or mock")
 
 
 class Gateway:

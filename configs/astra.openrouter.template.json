@@ -1,0 +1,30 @@
+{
+  "arm": "B0",
+  "track": "closed",
+  "dataset": "cais/hle-diamond",
+  "dataset_revision": "REPLACE_WITH_EXACT_HF_COMMIT",
+  "scope": "REPLACE_WITH_DECLARED_SCOPE",
+  "provider": {
+    "kind": "openrouter",
+    "model": "openai/gpt-6-astra",
+    "openrouter_provider": "",
+    "input_per_million": 10.0,
+    "output_per_million": 50.0,
+    "max_input_tokens": 65536,
+    "max_output_tokens": 128000,
+    "vision": true,
+    "structured_output": true,
+    "reasoning_effort": "max",
+    "request_timeout_s": 3600
+  },
+  "limits": {
+    "item_usd": 16,
+    "run_usd": 16000,
+    "deadline_s": 7500,
+    "candidates": 1,
+    "calls": 2,
+    "retries": 1,
+    "concurrency": 2,
+    "finalization_usd": 0
+  }
+}

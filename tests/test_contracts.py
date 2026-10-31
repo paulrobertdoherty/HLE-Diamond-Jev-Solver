@@ -6,7 +6,7 @@ import unittest
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 from jev_solver.benchmarks.data import load_questions, prepare
 from jev_solver.candidates.selection import clusters, normalize, vote
@@ -19,6 +19,39 @@ from jev_solver.tracing.store import Store
 
 
 class RecordTests(unittest.TestCase):
+    @unittest.skipUnless(
+        importlib.util.find_spec("datasets"), "optional dataset dependency not installed"
+    )
+    def test_auxiliary_image_columns_are_not_decoded_during_preparation(self):
+        from datasets import Dataset, Image
+
+        dataset = Dataset.from_list(
+            [
+                {
+                    "id": str(i),
+                    "question": "What is 1 + 1?",
+                    "answer": "2",
+                    "image": "data:image/png;base64,ORIGINAL",
+                    "image_preview": {"bytes": b"not a decodable image", "path": None},
+                    "rationale_image": {"bytes": b"also not decodable", "path": None},
+                }
+                for i in range(1000)
+            ],
+        )
+        dataset = dataset.cast_column("image_preview", Image())
+        dataset = dataset.cast_column("rationale_image", Image())
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            patch.dict("os.environ", {"HF_TOKEN": "test-token"}),
+            patch("datasets.load_dataset", return_value=dataset),
+        ):
+            root = Path(tmp)
+            manifest = prepare(root, "a" * 40, dev_count=50)
+            self.assertEqual(manifest["development_count"], 50)
+            questions = load_questions(root / "solver/questions.jsonl")
+            self.assertEqual(questions[0].images, ("data:image/png;base64,ORIGINAL",))
+            self.assertEqual(set(record(questions[0])), {"id", "question", "images"})
+
     def test_solver_view_rejects_label_metadata(self):
         for field in ("answer", "partition", "rationale", "subject", "grading_metadata"):
             with self.subTest(field=field), self.assertRaises(ValueError):

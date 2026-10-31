@@ -10,6 +10,7 @@ import os
 import random
 import re
 from collections import defaultdict
+from dataclasses import replace
 from pathlib import Path
 
 from ..models import QuestionView, canonical, digest, record
@@ -108,8 +109,11 @@ def prepare(
         dataset = load_dataset(
             dataset_name, revision=revision, split="test", token=os.environ["HF_TOKEN"]
         )
-        if "image" in dataset.column_names and isinstance(dataset.features["image"], Image):
-            dataset = dataset.cast_column("image", Image(decode=False))
+        # Auxiliary preview/rationale columns can also contain Image features. Disable
+        # their decoding before iteration, even though they never enter solver inputs.
+        for name, feature in dataset.features.items():
+            if isinstance(feature, Image):
+                dataset = dataset.cast_column(name, replace(feature, decode=False))
         schema = dataset.features.to_dict()
         rows = list(dataset)
         if len(rows) != 1000:

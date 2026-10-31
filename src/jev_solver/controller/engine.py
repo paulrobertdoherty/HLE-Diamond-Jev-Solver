@@ -357,6 +357,7 @@ async def run(
     resume: bool = False,
     split: str = "full",
     progress=None,
+    question_ids: tuple[str, ...] = (),
 ) -> dict:
     config.validate()
     protocol = verify_protocol(config.protocol_manifest)
@@ -387,6 +388,13 @@ async def run(
         questions = [q for q in questions if q.id in ids]
     if not questions:
         raise ValueError("empty declared evaluation set")
+    if question_ids:
+        selected_ids = set(question_ids)
+        if len(selected_ids) != len(question_ids):
+            raise ValueError("duplicate selected question identifiers")
+        if not selected_ids <= {q.id for q in questions}:
+            raise ValueError("selected question identifiers must belong to the declared split")
+        questions = [q for q in questions if q.id in selected_ids]
     manifest = {
         "config": asdict(config),
         "config_hash": config.hash,

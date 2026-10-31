@@ -3,6 +3,11 @@
 .env.*
 !.env.example
 *.pem
+key.txt
+openrouterkey.txt
+jev-key.txt
+brave-key.txt
+hf-token.txt
 
 # Local benchmark material and private traces
 data/

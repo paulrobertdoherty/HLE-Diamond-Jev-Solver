@@ -5,7 +5,7 @@ The architecture is an explicit asynchronous state machine with typed records an
 | Plan area | Implementation |
 | --- | --- |
 | Benchmark preparation and isolation | `benchmarks/data.py`: authenticated revision-pinned preparation; strict solver allowlist; original images and IDs; content/schema hashes; local stratified splits |
-| Provider boundaries | `providers/backbone.py`: OpenAI Responses and synthetic adapters, explicit capabilities, structured candidate validation, returned-model and usage checks |
+| Provider boundaries | `providers/backbone.py`, `providers/openrouter.py`: OpenAI Responses, OpenRouter Chat Completions and synthetic adapters, explicit capabilities, structured candidate validation, returned-model and usage checks |
 | Jev contracts | `providers/jev.py`, `judgments/pipeline.py`: typed SDK Choice/Noul/Score, normalized ordered scores, local state, exact spans before support judgments, explicit outages and baseline fallback |
 | Controller and accounting | `controller/engine.py`, `controller/budget.py`: bounded phases, independent candidates, global concurrency, monetary reservations, retries, cancellation and finalization |
 | Durable events and resume | `tracing/store.py`: SQLite WAL and durable transactions; item-scoped complete-request caches; immutable run identities and idempotent finalization |
@@ -36,13 +36,13 @@ Adaptive constraint checks run again after repair. Persistent failures reject th
 
 ## Deliberate scope and remaining empirical work
 
-The live backbone adapter is OpenAI. Multiple pinned OpenAI model configurations are supported; Anthropic and other provider protocols are not silently treated as OpenAI-compatible. They require an additional adapter and provider-specific tests.
+Live backbone adapters support direct OpenAI Responses and OpenRouter Chat Completions, including multiple models from either transport in M. OpenRouter uses its own environment key, explicit model slugs, strict JSON Schema output, parameter-support and price filters, and an optional host pin. Native tools and output-changing plugins are disabled. The OpenRouter adapter has mocked HTTP, accounting, failure, baseline-run and resume tests, plus private live Sol solver and Astra grading pilots described in [SOL_PILOT.md](SOL_PILOT.md). Compatibility with other models and accounts still requires validation. Other direct provider protocols require additional adapters and contract tests.
 
 The optional hybrid index uses fixed hashed character vectors. It provides a reproducible dense feature baseline without unaccounted embedding calls, and is explicitly labeled in extended reports. Learned semantic embeddings, a broad production corpus, specialist tools, knowledge graphs, and cross-run answer memory are not prerequisites of the initial evidence-handling experiment.
 
 The HTML extractor is deterministic and preserves text boundaries; PDF extraction is text-only. Images in questions are preserved for the backbone, while fetched image/audio/video payloads and OCR are excluded. Extraction quality, equations and tables require source-level retrieval diagnostics; inaccessible or unparseable pages must not be replaced with authoritative-sounding snippet summaries.
 
-Budget accounting uses provider-reported tokens at frozen user-configured rates. It does not query billing invoices. Missing responses retain their maximum reservation, so uncertain runs can overestimate spend. Reservations above the declared price envelope stop further dispatch, and an incorrect price configuration can already have incurred an overrun. Actual model availability, rate limits, price schedules, image token envelopes and supported sampling options require account-specific validation before the held-out job.
+Budget accounting uses provider-reported tokens at frozen user-configured rates. OpenRouter also preserves reported cost and uses it when higher than the rate estimate. It does not query billing invoices. Missing responses retain their maximum reservation, so uncertain runs can overestimate spend. Charges above the declared price envelope stop further dispatch, and an incorrect price configuration can already have incurred an overrun. Actual model availability, rate limits, price schedules, image token envelopes and supported sampling options require account-specific validation before the held-out job.
 
 No numerical result on HLE-Diamond, no claim of Jev improvement, and no adaptive-stage promotion follows from synthetic tests. External development labels, overlap checks, policy calibration, matched-cost experiments across multiple frozen budgets, blinded grader review, sample-size decisions, contamination adjudication and final publication are research activities to perform with this harness. Full semantic retrieval and heterogeneous providers remain conditional extensions in PLAN.md. The library does not invent their acceptance measurements.
 

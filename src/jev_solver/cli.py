@@ -32,6 +32,12 @@ def parser() -> argparse.ArgumentParser:
         s.add_argument("--questions", type=Path, required=True)
         s.add_argument("--output", type=Path, required=True)
         s.add_argument("--split", choices=["full", "development", "heldout"], default="full")
+        s.add_argument(
+            "--question-id",
+            action="append",
+            default=[],
+            help="select an original ID within the split; repeat for multiple IDs",
+        )
     s = sub.add_parser("grade")
     s.add_argument("--run", type=Path, required=True)
     s.add_argument("--labels", type=Path, required=True)
@@ -113,6 +119,7 @@ def execute(args) -> dict:
                 args.command == "resume",
                 args.split,
                 progress,
+                tuple(args.question_id),
             )
         )
     if args.command == "grade":
