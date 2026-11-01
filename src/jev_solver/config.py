@@ -62,11 +62,11 @@ class Config:
     code_usd: float = 0
     sandbox_image: str = ""
     protocol_manifest: str = "protocol/manifest.json"
-    prompt_version: str = "evidence-v1"
+    prompt_version: str = "evidence-v2"
     parser_version: str = "paragraph-v1"
     seed: int = 17
     jev_failure: str = "fail"
-    selector: str = "vote"
+    selector: str = "auto"
     adaptive: bool = False
     evidence_chars: int = 18000
     corpus: str = ""
@@ -105,15 +105,15 @@ class Config:
             raise ValueError("additional providers require the M arm")
         if self.adaptive and self.arm != "Jfull":
             raise ValueError("adaptive routing requires Jfull")
-        if self.selector not in {"vote", "jev", "backbone"}:
+        if self.selector not in {"auto", "vote", "jev", "backbone"}:
             raise ValueError("unknown selector")
-        if self.arm in {"B0", "B1"} and self.selector != "vote":
+        if self.arm in {"B0", "B1"} and self.selector not in {"auto", "vote"}:
             raise ValueError("closed-book baselines use raw output or deterministic voting")
         if self.selector == "jev" and self.arm not in {"Jfull", "M", "R"}:
             raise ValueError("Jev selection is a later experiment")
         if self.jev_failure not in {"fail", "baseline"}:
             raise ValueError("unknown Jev fallback policy")
-        if self.search_backend not in {"mock", "brave"}:
+        if self.search_backend not in {"mock", "brave", "perplexity"}:
             raise ValueError("unknown search backend")
         lim = self.limits
         for key, val in asdict(lim).items():
@@ -154,6 +154,8 @@ class Config:
         for rate in (self.search_usd, self.fetch_usd, self.code_usd):
             if isinstance(rate, bool) or not math.isfinite(rate) or rate < 0:
                 raise ValueError("tool charges must be finite and nonnegative")
+        if self.search_backend == "perplexity" and self.search_usd <= 0:
+            raise ValueError("Perplexity search requires an explicit positive search_usd")
         providers = (self.provider, self.jev, *self.additional_providers)
         for p in providers:
             if (

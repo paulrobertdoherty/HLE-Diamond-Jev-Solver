@@ -434,6 +434,15 @@ wheels = [
 ]
 
 [[package]]
+name = "distro"
+version = "1.9.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/fc/f8/98eea607f65de6527f8a2e8885fc8015d3e6f5775df186e443e0964a11c3/distro-1.9.0.tar.gz", hash = "sha256:2fa77c6fd8940f116ee1d6b94a2f90b13b5ea8d019b98bc8bafdcabcdd9bdbed", size = 60722, upload-time = "2023-12-24T09:54:32.31Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/12/b3/231ffd4ab1fc9d679809f356cebee130ac7daa00d6d6f3206dd4fd137e9e/distro-1.9.0-py3-none-any.whl", hash = "sha256:7bffd925d65168f85027d8da9af6bddab658135b840670a223589bc0c8ef02b2", size = 20277, upload-time = "2023-12-24T09:54:30.421Z" },
+]
+
+[[package]]
 name = "filelock"
 version = "4.2.4"
 source = { registry = "https://pypi.org/simple" }
@@ -699,6 +708,7 @@ source = { editable = "." }
 api = [
     { name = "httpx" },
     { name = "openai" },
+    { name = "perplexityai" },
     { name = "pypdf" },
     { name = "typesafe-sdk" },
 ]
@@ -714,6 +724,7 @@ requires-dist = [
     { name = "datasets", marker = "extra == 'data'", specifier = "==4.8.4" },
     { name = "httpx", marker = "extra == 'api'", specifier = "==0.28.1" },
     { name = "openai", marker = "extra == 'api'", specifier = "==3.40.0" },
+    { name = "perplexityai", marker = "extra == 'api'", specifier = "==0.46.1" },
     { name = "pypdf", marker = "extra == 'api'", specifier = "==6.1.3" },
     { name = "ruff", marker = "extra == 'dev'", specifier = "==0.14.3" },
     { name = "typesafe-sdk", marker = "extra == 'api'", specifier = "==0.7.5" },
@@ -1269,6 +1280,22 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/92/f5/9d753d85c4ea85b6d1c3735496ae5b416d7ef6905f1845c70e9521d124d9/pandas-3.1.0-cp315-cp315t-musllinux_1_2_x86_64.whl", hash = "sha256:dde9a55ecd3c4f9100ac50ab15e852e4c54fcf372d800e4495e0b2159a0122ab", size = 12916085, upload-time = "2026-10-22T11:56:56.084Z" },
     { url = "https://files.pythonhosted.org/packages/e6/f9/4a6965677477dbbb19f8881befb01b67eb6009809db73f7f1b7a0132faf1/pandas-3.1.0-cp315-cp315t-win_amd64.whl", hash = "sha256:3fe234bfb9999552dc54c45851752e56e163218d7663897dca950b4a7c32af39", size = 11267097, upload-time = "2026-10-22T11:56:58.479Z" },
     { url = "https://files.pythonhosted.org/packages/99/35/e60fd8228db4eb848802988dbc6e3a0f1a81c57f06ad95ebe4cd534fa655/pandas-3.1.0-cp315-cp315t-win_arm64.whl", hash = "sha256:f1a93c24175129bfc9922ef748ddae1d8137c743ed835e2615be329f606fed4d", size = 10597861, upload-time = "2026-10-22T11:57:00.776Z" },
+]
+
+[[package]]
+name = "perplexityai"
+version = "0.46.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "anyio" },
+    { name = "distro" },
+    { name = "httpx" },
+    { name = "pydantic" },
+    { name = "sniffio" },
+    { name = "typing-extensions" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/d6/37/9eb1ba319a702c98d7884b10f9f86c4ff8de743c74b2b601d9f58762a5c5/perplexityai-0.46.1-py3-none-any.whl", hash = "sha256:78b051eb5530d2aad1dfda2d4a00c31731fb0d61702628ac5e8dd13557409974", size = 156460, upload-time = "2026-10-23T11:45:18.347Z" },
 ]
 
 [[package]]

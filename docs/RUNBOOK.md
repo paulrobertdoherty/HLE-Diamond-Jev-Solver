@@ -66,7 +66,7 @@ Set only the solver credentials in its environment:
 
 - `OPENAI_API_KEY` for an OpenAI backbone, or `OPENROUTER_API_KEY` for an OpenRouter backbone (both if mixing them in M).
 - `TYPESAFE_API_KEY` for Jev arms or Jev selection/retrieval.
-- `BRAVE_SEARCH_API_KEY` for live tool arms.
+- `BRAVE_SEARCH_API_KEY` for `search_backend: brave`, or `PERPLEXITY_API_KEY` for `search_backend: perplexity`.
 
 No environment files are automatically sourced. `HF_TOKEN` is only needed for preparation. `GRADER_OPENAI_API_KEY` or `GRADER_OPENROUTER_API_KEY` belongs in the evaluator environment.
 
@@ -111,7 +111,7 @@ Edit `private/openrouter.json` before running:
 - Optionally set `openrouter_provider` to a host slug from the model's OpenRouter page to restrict requests to that host with fallbacks disabled. An empty string allows OpenRouter to route among hosts of the same model within your price ceilings. The responding host and generation ID are saved in private traces.
 - Replace `dataset_revision` with the exact prepared commit and declare `scope`. Keep explicit item/run dollar caps appropriate for your pilot.
 
-The template uses B0, so only `OPENROUTER_API_KEY` is needed during solving. B1 also requires no Jev, search key or sandbox. B2 adds Brave search and the pinned Docker sandbox; Jev arms additionally need `TYPESAFE_API_KEY`. You can use OpenRouter in the main `provider` and in M's `additional_providers`, including alongside direct OpenAI models.
+The template uses B0, so only `OPENROUTER_API_KEY` is needed during solving. B1 also requires no Jev, search key or sandbox. B2 adds Brave or Perplexity search and the pinned Docker sandbox; Jev arms additionally need `TYPESAFE_API_KEY`. You can use OpenRouter in the main `provider` and in M's `additional_providers`, including alongside direct OpenAI models.
 
 With the dataset already prepared in `private/diamond`:
 
@@ -132,6 +132,45 @@ API contract references: [Chat Completions](https://openrouter.ai/docs/api/refer
 For an accuracy-first GPT-6 Astra B0 run, `configs/astra.openrouter.template.json` sets `openai/gpt-6-astra`, `max` effort, 128,000 output tokens, image support, no temperature override, a one-hour HTTP timeout and a 7,500-second item deadline. Input is bounded to 65,536 tokens, comfortably below the model's long-context price threshold. Same-model host routing stays enabled for availability. This is a suggested starting configuration, not a measured optimum on HLE-Diamond. It uses standard execution; the Chat Completions adapter does not configure OpenAI's Responses-only pro mode.
 
 Prices checked on 2026-10-30: $10/M input and $50/M output, from [OpenRouter's model page](https://openrouter.ai/openai/gpt-6-astra); [official OpenAI documentation](https://developers.openai.com/api/docs/models/gpt-6-astra) confirms `max` effort and the 128,000 output limit. At those configured rates the harness reserves $7.05536 per attempt. The template's $16/item and $16,000/run caps accommodate 1,000 questions and one retry per item; these are conservative caps, not expected spend, and exclude separate grading. Copy to an ignored private path and set the dataset revision, scope and a budget you intend to use before running. A pilot should use a separately prepared development split and its own run directory/cap; do not report a full-set score from a run whose cap prevents finishing items. Compare `xhigh` and `max` on development data before freezing held-out settings.
+
+### Perplexity search
+
+Set `search_backend` to `perplexity` and export `PERPLEXITY_API_KEY`. The `api` dependency group includes the pinned official `perplexityai` SDK. The adapter calls `POST https://api.perplexity.ai/search` with one query, standard `search_type: web`, at most 20 results, 20,000 extracted tokens total and 1,024 per page. It returns URL/title/snippet records through the existing blocklist and cache checks. Page content still comes from the audited direct fetcher, with its original source hashes and quote offsets. Perplexity snippets are not treated as fetched full pages.
+
+This uses the [Search API](https://docs.perplexity.ai/docs/search/overview). Our backbone generates the answer with its existing key; Jev performs its configured judgments. Perplexity's Agent API would also change answer generation and research orchestration, so it is not used for this backend comparison.
+
+The [published standard Search price](https://docs.perplexity.ai/docs/getting-started/pricing), checked on 2026-10-31, is $0.005 per successful request with no model-token charges. Set `search_usd: 0.005` after checking the rate for your account. SDK retries are disabled. The supervisor handles transient errors, respects numeric or HTTP-date `Retry-After` headers, and counts each attempt against the configured limits. Failed attempts retain conservative reservations even when the service does not bill them.
+
+For the existing 50-question development split, export the backbone and Jev credentials as usual, then validate the new evidence workflow:
+
+```bash
+export PERPLEXITY_API_KEY="$(tr -d '\r\n' < private/perplexity-api-key.txt)"
+jev-solver validate --config configs/sol-low.evidence-v2.j23.perplexity.json
+jev-solver estimate --config configs/sol-low.evidence-v2.j23.perplexity.json --items 50
+# Paid solver run; grading is separate.
+jev-solver run --config configs/sol-low.evidence-v2.j23.perplexity.json --questions private/sol-low-pilot-data/solver/questions.jsonl --split development --output private/sol-low-evidence-v2-j23-perplexity
+```
+
+Use a new output directory and verify the local sandbox digest before running. Validation and estimation make no paid requests. The older `sol-low.jev-*-pilot` files describe earlier exploratory settings; their recorded implementation revision is needed to reproduce the original citation gate and selection policy.
+
+### Evidence-v2 development comparison
+
+Evidence-v2 fixes the failure paths identified in the Sol/Jev pilot. Candidates list `source_claims` only for critical facts used from retrieved passages; each requires a matching critical citation. Independent derivations do not need citations merely because a page was retrieved. Fabricated spans and unresolved critical support or constraint failures still exclude a draft after one repair.
+
+The controller retains validated earlier answers. The default `selector: auto` uses deterministic voting for B0/B1 and backbone selection after tool revisions; the study configurations explicitly select `backbone`. That extra charged model call receives distinct anonymized answers, their checks and cited-source provenance, the current evidence packet and code artifacts. It can recover an earlier answer, accept a correction or select none-supported. Source support alone is not whole-answer correctness, and source-dependency declarations are model judgments. Explicit `selector: vote` remains a deterministic tool ablation that favors the latest validated draft rather than treating revisions as independent votes.
+
+Research tries later allowed URLs after failed fetches within the same attempt caps, leaves fetch slots for other queries, balances shortlist/packet coverage across queries and sources, and omits Jev's irrelevant/background-only levels. Sources remain fully audited; snippets are not promoted to fetched evidence. Previously exposed passages remain in the per-item ledger for exact citation checking across rounds. Private `retrieval_summary`, `candidate_checks`, `candidate_rejected` and `candidate_selection` events expose these decisions for diagnosis.
+
+Use the following prospective 2×2 study on the same development split:
+
+| Search backend | Tool control without Jev | Jev reranking and support |
+| --- | --- | --- |
+| Brave | `configs/sol-low.evidence-v2.b2.brave.json` | `configs/sol-low.evidence-v2.j23.brave.json` |
+| Perplexity | `configs/sol-low.evidence-v2.b2.perplexity.json` | `configs/sol-low.evidence-v2.j23.perplexity.json` |
+
+The four configurations share Sol settings, prompt version, deterministic seed, final-selection policy, and per-item/run/tool caps. Each run has its own $10 cap and grading is separately budgeted. The primary Jev comparison is J23 versus B2 within a backend; backend comparisons are secondary. New model samples and live search variability remain confounders for individual-question attribution. The old B0/J23 results do not measure the new workflow. Repeated runs or a separately declared experiment with frozen shared initial candidates are needed to control sampling variance.
+
+Keep held-out questions untouched while evaluating these changes. Run identities freeze the new implementation and prompt; old partially completed runs cannot resume under changed code. No accuracy improvement follows from mocked regression tests alone.
 
 ## Grading and paired analysis
 

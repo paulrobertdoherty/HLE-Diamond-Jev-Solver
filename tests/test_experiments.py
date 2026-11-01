@@ -430,8 +430,8 @@ class ControllerRegressionTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_tool_caps_keep_evidence_and_allow_final_revision(self):
         for limits, expected in (
-            (replace(Limits(), rounds=1), {"fetch": 8, "search": 3, "model": 2}),
-            (replace(Limits(), rounds=1, search=1), {"fetch": 3, "search": 1, "model": 2}),
+            (replace(Limits(), rounds=1), {"fetch": 8, "search": 3, "model": 3}),
+            (replace(Limits(), rounds=1, search=1), {"fetch": 3, "search": 1, "model": 3}),
         ):
             with self.subTest(limits=limits):
                 solver = self.solver(Config(arm="B2", limits=limits))
@@ -524,7 +524,7 @@ class ControllerRegressionTests(unittest.IsolatedAsyncioTestCase):
                     self.assertTrue(result.abstained)
                     self.assertIn("42", result.candidate_answers)
                     self.assertEqual(checker.await_args_list[1].args[-1].id, "repair-0")
-                    self.assertEqual(checker.await_count, 2 if candidates == 1 else 3)
+                    self.assertEqual(checker.await_count, 2 + candidates)
                     rejected = [
                         json.loads(row[0])
                         for row in solver.store.db.execute(
@@ -537,7 +537,7 @@ class ControllerRegressionTests(unittest.IsolatedAsyncioTestCase):
         solver = self.solver(
             Config(arm="Jfull", adaptive=True, limits=replace(Limits(), candidates=1, rounds=1))
         )
-        checker = AsyncMock(side_effect=[["units"], []])
+        checker = AsyncMock(side_effect=[["units"], [], ["units"]])
         original = MockBackbone.generate
 
         async def repair_units(backbone, q, context, schema):
@@ -556,7 +556,7 @@ class ControllerRegressionTests(unittest.IsolatedAsyncioTestCase):
             result = await solver.solve(QuestionView("q", "What is 6 * 7? Include metres."))
         self.assertEqual(result.status, "completed")
         self.assertEqual(result.answer, "42 m")
-        self.assertEqual(checker.await_count, 2)
+        self.assertEqual(checker.await_count, 3)
         self.assertEqual(checker.await_args_list[1].args[-1].answer, "42 m")
 
 

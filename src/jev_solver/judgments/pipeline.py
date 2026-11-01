@@ -27,6 +27,9 @@ SUPPORT = {
     },
 }
 
+# The first two ordered levels mean irrelevant or background only.
+MIN_USEFUL_RELEVANCE = 2 / 3
+
 
 async def rerank(jev: Jev, item: str, passages: list[EvidencePassage]) -> list[EvidencePassage]:
     async def judge(p):
@@ -50,8 +53,17 @@ async def rerank(jev: Jev, item: str, passages: list[EvidencePassage]) -> list[E
         await asyncio.gather(*tasks, return_exceptions=True)
         raise
     if any(p is None for p in results):
-        return lexical_rank(passages[:20])
-    return sorted(results, key=lambda p: (-(p.score or 0), p.id))
+        return [p for p in lexical_rank(passages[:20]) if p.score > 0]
+    return sorted(
+        (p for p in results if p.score >= MIN_USEFUL_RELEVANCE),
+        key=lambda p: (-(p.score or 0), p.id),
+    )
+
+
+def missing_source_claims(candidate: Candidate) -> list[str]:
+    """Only declared dependencies on retrieved facts require citation coverage."""
+    covered = {c.claim for c in candidate.citations if c.critical}
+    return [claim for claim in candidate.source_claims if claim not in covered]
 
 
 def exact_citation(candidate: Candidate, evidence: list[EvidencePassage]) -> list[dict]:

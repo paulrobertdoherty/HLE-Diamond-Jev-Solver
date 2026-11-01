@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 import re
-from collections import Counter
+from collections import Counter, deque
 from dataclasses import replace
 from datetime import datetime, timezone
 from urllib.parse import urlsplit
@@ -58,12 +58,42 @@ def lexical_rank(passages: list[EvidencePassage]) -> list[EvidencePassage]:
     )
 
 
+def retrieval_shortlist(passages: list[EvidencePassage], limit: int = 20) -> list[EvidencePassage]:
+    """Give each query and source a turn before admitting more chunks from a long page."""
+    queries = {}
+    for passage in lexical_rank(passages):
+        sources = queries.setdefault(passage.subquestion, {})
+        sources.setdefault(passage.url, deque()).append(passage)
+    query_queues = deque(deque(sources.values()) for sources in queries.values())
+    result, seen = [], set()
+    while query_queues and len(result) < limit:
+        sources = query_queues.popleft()
+        source = sources.popleft()
+        passage = source.popleft()
+        if passage.id not in seen:
+            seen.add(passage.id)
+            result.append(passage)
+        if source:
+            sources.append(source)
+        if sources:
+            query_queues.append(sources)
+    return result
+
+
 def diverse_packet(
     passages: list[EvidencePassage], chars: int, limit: int = 6
 ) -> list[EvidencePassage]:
     packet, seen, hosts = [], set(), Counter()
     used = 0
+    queries = {}
     for passage in passages:
+        queries.setdefault(passage.subquestion, deque()).append(passage)
+    queues = deque(queries.values())
+    while queues:
+        query = queues.popleft()
+        passage = query.popleft()
+        if query:
+            queues.append(query)
         host = urlsplit(passage.url).hostname
         fingerprint = digest(passage.text)
         if fingerprint in seen or hosts[host] >= 2 or used + len(passage.text) > chars:

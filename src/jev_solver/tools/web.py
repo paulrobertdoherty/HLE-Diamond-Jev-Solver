@@ -6,6 +6,7 @@ import ipaddress
 import os
 import socket
 from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from html.parser import HTMLParser
 from urllib.parse import urljoin, urlsplit
 
@@ -169,6 +170,75 @@ class LiveWeb:
         raise Blocked("redirect_limit")
 
 
+def retry_after_seconds(value: str | None) -> float:
+    """Accept Retry-After seconds or an HTTP date; malformed values use normal backoff."""
+    if value is None:
+        return 0
+    try:
+        return float(value)
+    except ValueError:
+        try:
+            return (parsedate_to_datetime(value) - datetime.now(timezone.utc)).total_seconds()
+        except (ValueError, TypeError, OverflowError):
+            return 0
+
+
+class PerplexityWeb(LiveWeb):
+    """Search-only Perplexity adapter; page fetches retain the audited direct fetcher."""
+
+    def __init__(self, *, transport=None):
+        self.transport = transport
+
+    async def search(self, query: str) -> list[dict]:
+        import httpx
+        from perplexity import APIConnectionError, APIStatusError, AsyncPerplexity
+
+        key = os.environ.get("PERPLEXITY_API_KEY")
+        if not key or not key.strip():
+            raise ValueError("PERPLEXITY_API_KEY required")
+        try:
+            # Pin the destination and disable SDK retries: every attempt belongs to Budget.
+            async with AsyncPerplexity(
+                api_key=key,
+                base_url="https://api.perplexity.ai",
+                max_retries=0,
+                timeout=30,
+                http_client=httpx.AsyncClient(
+                    timeout=30, trust_env=False, follow_redirects=False, transport=self.transport
+                ),
+            ) as client:
+                response = await client.search.create(
+                    query=query,
+                    search_type="web",
+                    max_results=20,
+                    max_tokens=20000,
+                    max_tokens_per_page=1024,
+                )
+        except APIStatusError as e:
+            raise ProviderError(
+                f"Perplexity search failed (HTTP {e.status_code})",
+                e.status_code in {408, 409, 429} or e.status_code >= 500,
+                retry_after_s=retry_after_seconds(e.response.headers.get("retry-after")),
+            ) from None
+        except APIConnectionError:
+            raise ProviderError("Perplexity search unavailable", retryable=True) from None
+        except Exception:
+            # SDK errors may include response bodies or credentials. Never forward that text.
+            raise ProviderError("invalid Perplexity search response") from None
+        try:
+            if not isinstance(response.results, list):
+                raise ValueError("results must be a list")
+            rows = []
+            for result in response.results[:20]:
+                row = {k: getattr(result, k) for k in ("url", "title", "snippet")}
+                if not all(isinstance(v, str) for v in row.values()) or not row["url"]:
+                    raise ValueError("invalid result fields")
+                rows.append(row)
+            return rows
+        except (AttributeError, TypeError, ValueError):
+            raise ProviderError("invalid Perplexity search response") from None
+
+
 class MockWeb:
     async def search(self, query: str) -> list[dict]:
         return [
@@ -191,7 +261,8 @@ class MockWeb:
 class AuditedWeb:
     def __init__(self, config: Config, store: Store, budget: Budget, policy: Policy, backend=None):
         self.config, self.store, self.budget, self.policy = config, store, budget, policy
-        self.backend = backend or (MockWeb() if config.search_backend == "mock" else LiveWeb())
+        backends = {"mock": MockWeb, "brave": LiveWeb, "perplexity": PerplexityWeb}
+        self.backend = backend if backend is not None else backends[config.search_backend]()
 
     def event(self, item: str, tool: str, key: str, outcome: str, rule="", replay=False):
         self.store.event(item, "tool", record(ToolEvent(tool, key, outcome, rule, replay)))

@@ -115,7 +115,7 @@ class Budget:
                 # No exception text: providers may include headers or task material.
                 if attempt >= self.config.limits.retries or not getattr(e, "retryable", False):
                     raise
-                await asyncio.sleep(min(2**attempt, 8))
+                await asyncio.sleep(max(min(2**attempt, 8), getattr(e, "retry_after_s", 0)))
             else:
                 self.settle(call, result["cost_usd"], result.get("usage", {}))
                 return result

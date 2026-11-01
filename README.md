@@ -49,6 +49,8 @@ For OpenRouter, copy [`configs/openrouter.template.json`](configs/openrouter.tem
 
 For a $27 account balance, the [Sol low pilot](docs/SOL_PILOT.md) provides a pinned configuration for a 50-question B0 development run with a $20 cap and no retries.
 
+Live tool runs can select `search_backend: perplexity` with `PERPLEXITY_API_KEY` and an explicit `search_usd`. The official Perplexity Search SDK returns sources for the existing backbone and Jev pipeline. Both Brave and Perplexity use the evidence-v2 workflow: source-dependent citation requirements, validated candidate history, and final selection using the retrieved evidence and check artifacts. See [Perplexity search setup](docs/RUNBOOK.md#perplexity-search) and the [matched B2/J23 development configurations](docs/RUNBOOK.md#evidence-v2-development-comparison). These fixes address observed failure paths; improved benchmark accuracy still requires measurement.
+
 ## Checks
 
 ```bash

@@ -98,17 +98,31 @@ class Candidate:
     queries: tuple[str, ...] = ()
     code: str = ""
     citations: tuple[Citation, ...] = ()
+    source_claims: tuple[str, ...] = ()
 
     @classmethod
     def parse(cls, row: dict, candidate_id: str) -> Candidate:
-        required = {"answer", "confidence", "verification", "gaps", "queries", "code", "citations"}
+        required = {
+            "answer",
+            "confidence",
+            "verification",
+            "gaps",
+            "queries",
+            "code",
+            "citations",
+            "source_claims",
+        }
         if set(row) != required:
             raise ValueError("malformed candidate fields")
         if any(not isinstance(row[k], str) for k in ("answer", "verification", "code")):
             raise ValueError("candidate text must be strings")
-        for k in ("gaps", "queries"):
+        for k in ("gaps", "queries", "source_claims"):
             if not isinstance(row[k], list) or any(not isinstance(s, str) for s in row[k]):
-                raise ValueError("candidate gaps and queries must be string lists")
+                raise ValueError("candidate gaps, queries and source claims must be string lists")
+        if any(not claim.strip() for claim in row["source_claims"]):
+            raise ValueError("source claims must be nonempty")
+        if not isinstance(row["citations"], list):
+            raise ValueError("candidate citations must be a list")
         return cls(
             candidate_id,
             row["answer"],
@@ -118,6 +132,7 @@ class Candidate:
             tuple(row["queries"]),
             row["code"],
             tuple(Citation.parse(c) for c in row["citations"]),
+            tuple(row["source_claims"]),
         )
 
 
