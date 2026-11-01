@@ -1,0 +1,73 @@
+{
+  "arm": "B2",
+  "track": "controlled",
+  "dataset": "cais/hle-diamond",
+  "dataset_revision": "04eeb7efa7e3e4f83a00cbd5ce436a38fd5dda23",
+  "scope": "50-question internal development split; seed=17; evidence-v3; use --split development",
+  "seed": 17,
+  "primary_comparison": "J23-B2 within each search backend; secondary Brave-Perplexity comparison; same model settings and budget caps",
+  "provider": {
+    "kind": "openrouter",
+    "model": "openai/gpt-6.1-sol",
+    "openrouter_provider": "",
+    "input_per_million": 2.0,
+    "output_per_million": 10.0,
+    "max_input_tokens": 65536,
+    "max_output_tokens": 8192,
+    "vision": true,
+    "structured_output": true,
+    "reasoning_effort": "low",
+    "request_timeout_s": 300
+  },
+  "limits": {
+    "item_usd": 3.0,
+    "run_usd": 10,
+    "deadline_s": 600,
+    "candidates": 1,
+    "rounds": 2,
+    "search": 2,
+    "fetch": 4,
+    "code": 2,
+    "calls": 120,
+    "retries": 0,
+    "concurrency": 2,
+    "finalization_usd": 0.75,
+    "finalization_calls": 32
+  },
+  "jev": {
+    "kind": "typesafe",
+    "model": "jev-1.14.0",
+    "input_per_million": 0.042,
+    "output_per_million": 0,
+    "max_input_tokens": 64000,
+    "max_output_tokens": 4096,
+    "vision": false,
+    "request_timeout_s": 120
+  },
+  "search_backend": "brave",
+  "search_usd": 0.005,
+  "fetch_usd": 0,
+  "code_usd": 0,
+  "sandbox_image": "sha256:2a3462f8a037dd41eee5eb6f9dac0a8bb2c752950ec5412d149e4d5118b55cd8",
+  "jev_failure": "fail",
+  "selector": "backbone",
+  "adaptive": false,
+  "departures": [
+    "Evidence-v3: independent dependency audits before research and after revision, explicit critical coverage, artifact-backed checks and structured selection basis.",
+    "Two feedback-driven rounds sharing two searches and four fetch attempts, with one fetch reserved for follow-up; up to two code executions.",
+    "Experimental relevance policy retains at most one uncertain alternative. Thresholds require independent development calibration.",
+    "Larger per-item and finalization reserves cover verification calls; total run cap remains $10. Estimate and choose a small smoke-test subset before a full run."
+  ],
+  "prompt_version": "evidence-v3",
+  "evidence_chars": 12000,
+  "coverage_policy": "critical-dependencies-v1",
+  "relevance": {
+    "min_score": 0.6666666666666666,
+    "uncertain_min_score": 0.3333333333333333,
+    "uncertain_confidence": 0.2,
+    "alternative_slots": 1,
+    "shortlist": 12,
+    "packet": 6
+  },
+  "followup_fetch_reserve": 1
+}

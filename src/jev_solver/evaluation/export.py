@@ -68,7 +68,7 @@ def export_report(artifact: Path, output: Path) -> dict:
         "budgets": {
             f.name: config["limits"][f.name]
             for f in fields(Limits)
-            if type(config["limits"][f.name]) in {int, float}
+            if f.name in config["limits"] and type(config["limits"][f.name]) in {int, float}
         },
         "metrics": safe_summary(data["grades"], config["seed"]),
         "candidate_diagnostics": diagnostics(data["grades"]),

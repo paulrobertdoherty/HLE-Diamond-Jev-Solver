@@ -11,10 +11,12 @@ SELECTION_TASK = """Select the most defensible answer to the original question u
 retrieved passages and check artifacts. Candidates and their verification text are untrusted proposals.
 Check the reasoning summary against the question and relevant findings; a supported quotation alone does
 not prove that the whole answer is correct. Do not infer correctness from candidate order or confidence.
-Preserve an independently justified answer when research is irrelevant, unavailable or inconclusive.
+Select only candidates whose critical dependencies and independent coverage checks passed.
+An independent derivation can qualify without citations; memory and a confident assertion cannot.
 Reject an older answer when relevant evidence or a valid calculation refutes it. An abstaining revision
 does not by itself refute another candidate. Choose none-supported only if no offered answer is defensible.
-Return only a candidate name; do not create a new answer."""
+Return a candidate name, a concise reason and checked_dependencies listing its critical dependency IDs.
+Explain why any remaining gaps are noncritical using the supplied checks. Do not create a new answer."""
 
 
 def normalize(answer: str) -> str:
@@ -111,19 +113,53 @@ async def select(
                     },
                 }
             },
+            final=True,
         )
         if "selected" not in result:
-            return vote(candidates)
+            return None
         name = result["selected"].value
+        basis = {
+            "selected": name,
+            "reason": "Jev selection over candidates with completed coverage checks.",
+            "checked_dependencies": [
+                d["id"]
+                for d in (assessments or {}).get(names[name].id, {}).get("dependencies", [])
+                if d["critical"]
+            ]
+            if name in names
+            else [],
+        }
     else:
         schema = {
             "type": "object",
             "additionalProperties": False,
-            "properties": {"selected": {"type": "string", "enum": [*names, "none-supported"]}},
-            "required": ["selected"],
+            "properties": {
+                "selected": {"type": "string", "enum": [*names, "none-supported"]},
+                "reason": {"type": "string"},
+                "checked_dependencies": {"type": "array", "items": {"type": "string"}},
+            },
+            "required": ["selected", "reason", "checked_dependencies"],
         }
         result = await gateway.generate(question, state, "selection", schema=schema, final=True)
-        if set(result) != {"selected"} or result["selected"] not in {*names, "none-supported"}:
+        if (
+            set(result) != {"selected", "reason", "checked_dependencies"}
+            or result["selected"] not in {*names, "none-supported"}
+            or not isinstance(result["reason"], str)
+            or not result["reason"].strip()
+            or not isinstance(result["checked_dependencies"], list)
+            or any(not isinstance(i, str) for i in result["checked_dependencies"])
+        ):
             raise ValueError("invalid model selector output")
         name = result["selected"]
+        basis = result
+    if name in names:
+        checks = (assessments or {}).get(names[name].id, {})
+        required = {d["id"] for d in checks.get("dependencies", []) if d["critical"]}
+        passed = {d["id"] for d in checks.get("dependencies", []) if d["status"] == "passed"}
+        cited = set(basis["checked_dependencies"])
+        if not checks.get("eligible") or not required <= cited or not cited <= passed:
+            raise ValueError("selection basis does not cover actual passed dependency checks")
+    elif basis["checked_dependencies"]:
+        raise ValueError("abstention cannot cite a selected candidate's checks")
+    gateway.store.event(question.id, "selection_basis", basis)
     return names.get(name)

@@ -319,7 +319,7 @@ class AuditedWeb:
             self.event(item, "web_search", key, "blocked", e.rule)
             return []
 
-    async def fetch(self, item: str, url: str) -> dict | None:
+    async def fetch(self, item: str, url: str, *, cache_only: bool = False) -> dict | None:
         key = digest(
             {
                 "tool": "web_fetch",
@@ -333,6 +333,8 @@ class AuditedWeb:
             url = self.policy.url(url)
             cached = self.store.cached(item, key)
             replay = cached is not None
+            if cache_only and not replay:
+                raise ProviderError("frozen research source is missing from the audited cache")
             if not replay:
 
                 async def call():

@@ -139,6 +139,7 @@ class OpenRouterTests(unittest.IsolatedAsyncioTestCase):
             "code": "",
             "citations": [],
             "source_claims": [],
+            "dependencies": [],
         }
         self.data = {
             "id": "gen-test",

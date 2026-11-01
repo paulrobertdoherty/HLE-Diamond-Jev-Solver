@@ -65,6 +65,9 @@ def parser() -> argparse.ArgumentParser:
     s.add_argument("--cases", type=Path, required=True)
     s.add_argument("--output", type=Path, required=True)
     s.add_argument("--judge", choices=["jev", "backbone", "lexical"], default="jev")
+    s = sub.add_parser("workflow-eval")
+    s.add_argument("--cases", type=Path, required=True)
+    s.add_argument("--output", type=Path, required=True)
     return p
 
 
@@ -89,6 +92,15 @@ def execute(args) -> dict:
             "model_call_reservation_usd": upper_cost(config.provider),
             "jev_call_reservation_usd": upper_cost(config.jev),
             "item_cap_usd": config.limits.item_usd,
+            "rounds": config.limits.rounds,
+            "maximum_j2_passages_per_round": config.relevance.shortlist,
+            "finalization_call_reserve": config.limits.finalization_calls,
+            "finalization_dollar_reserve": config.limits.finalization_usd,
+            "finalization_model_calls_covered_by_dollar_reserve": int(
+                config.limits.finalization_usd / upper_cost(config.provider)
+            )
+            if upper_cost(config.provider)
+            else None,
             "run_envelope_usd": min(config.limits.run_usd, args.items * config.limits.item_usd),
             "note": "Conservative envelope, not predicted billed spend. Unknown failures retain full reservation.",
         }
@@ -174,6 +186,10 @@ def execute(args) -> dict:
         return asyncio.run(
             components(Config.load(args.config), args.cases, args.output, args.judge)
         )
+    if args.command == "workflow-eval":
+        from .evaluation.components import workflow_metrics
+
+        return workflow_metrics(args.cases, args.output)
     raise ValueError("unknown operation")
 
 

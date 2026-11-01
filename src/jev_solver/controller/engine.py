@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import fcntl
 import json
-import math
 import os
 import time
 from datetime import datetime, timezone
@@ -21,24 +20,27 @@ from ..judgments.pipeline import (
     continuation,
     failures,
     missing_source_claims,
-    rerank,
     route,
     verify,
 )
 from ..models import Candidate, Prediction, QuestionView, digest, record
-from ..providers.backbone import Gateway, ProviderError
+from ..providers.backbone import Gateway
 from ..providers.jev import Jev
 from ..retrieval.corpus import Corpus
-from ..retrieval.evidence import chunk_page, diverse_packet, lexical_rank, retrieval_shortlist
+from ..retrieval.evidence import diverse_packet
+from ..retrieval.outcomes import planner_outcomes
+from ..judgments.verification import audit_dependencies
 from ..tools.policy import Policy
 from ..tools.sandbox import Sandbox
 from ..tools.web import AuditedWeb
 from ..tracing.store import Store, atomic_json, private_dir
-from .budget import Budget, BudgetExceeded, CallLimitExceeded
+from .budget import Budget, BudgetExceeded
+from .research import research
 
 
 class Phase(str, Enum):
     INITIAL = "initial"
+    PLAN = "plan"
     ROUTE = "route"
     RESEARCH = "research"
     CODE = "code"
@@ -50,7 +52,8 @@ class Phase(str, Enum):
 
 TRANSITIONS = {
     None: {Phase.INITIAL},
-    Phase.INITIAL: {Phase.INITIAL, Phase.ROUTE, Phase.RESEARCH, Phase.CODE, Phase.SELECT},
+    Phase.INITIAL: {Phase.INITIAL, Phase.PLAN, Phase.SELECT},
+    Phase.PLAN: {Phase.ROUTE, Phase.RESEARCH, Phase.CODE, Phase.SELECT},
     Phase.ROUTE: {Phase.RESEARCH, Phase.CODE, Phase.SELECT},
     Phase.RESEARCH: {Phase.CODE, Phase.REVISE},
     Phase.CODE: {Phase.REVISE},
@@ -72,6 +75,9 @@ class Solver:
         self.corpus = Corpus(Path(config.corpus), self.policy) if config.corpus else None
         self.phases = {}
         self.starts = {}
+        self.plans = {}
+        self.round_numbers = {}
+        self.research_outcomes = {}
 
     def transition(self, item: str, phase: Phase, **state):
         old = self.phases.get(item)
@@ -105,127 +111,99 @@ class Solver:
         return candidates
 
     async def research(self, q: QuestionView, candidate: Candidate):
-        passages, pages = [], {}
-        queries = list(candidate.queries[:3]) or list(candidate.gaps[:1])
-        # Logical quotas replay identically after interruption, even at the global
-        # tool cap. Leave fetch capacity for the other planned queries.
-        planned = min(len(queries), max(1, self.config.limits.search))
-        fetch_slots = self.config.limits.fetch
-        reached = set()
-
-        def tool_limit(error):
-            if error.kind not in {"search", "fetch"}:
-                raise error
-            if error.kind not in reached:
-                self.store.event(q.id, "research_limit", {"kind": error.kind})
-                reached.add(error.kind)
-
-        try:
-            for query_no, query in enumerate(queries):
-                if self.corpus:
-                    passages.extend(
-                        self.corpus.retrieve(query, hybrid=self.config.retrieval != "lexical")
-                    )
-                try:
-                    results = await self.web.search(q.id, query, q.question)
-                except CallLimitExceeded as e:
-                    tool_limit(e)
-                    # A later query may have a cached response even when an
-                    # earlier failed request has no cache entry on resume.
-                    continue
-                except ProviderError:
-                    self.store.event(q.id, "search_unavailable", {"query": query})
-                    continue
-                fetch_quota = math.ceil(fetch_slots / max(1, planned - query_no))
-                attempts = successes = 0
-                seen_results = set()
-                for result in results:
-                    url = result["url"]
-                    if url in seen_results:
-                        continue
-                    seen_results.add(url)
-                    if url not in pages and attempts >= fetch_quota:
-                        break
-                    try:
-                        if url not in pages:
-                            attempts += 1
-                            fetch_slots -= 1
-                            pages[url] = await self.web.fetch(q.id, url)
-                        page = pages[url]
-                    except CallLimitExceeded as e:
-                        tool_limit(e)
-                        pages[url] = None
-                        # Keep looking for cached successes after uncached
-                        # failures. The supervisor prevents new dispatches.
-                        continue
-                    except ProviderError:
-                        pages[url] = None
-                        self.store.event(q.id, "source_unavailable", {"url": url})
-                        continue
-                    if page:
-                        chunks = chunk_page(page, query)
-                        passages.extend(chunks)
-                        successes += bool(chunks)
-                    if successes >= 3:
-                        break
-        except CallLimitExceeded as e:
-            # Cache replays above remain available even at the tool cap. Keep
-            # their evidence and use the remaining budget to revise and finalize.
-            tool_limit(e)
-        shortlist = retrieval_shortlist(passages)
-        if self.config.arm in {"J2", "J23", "Jfull", "M"} or self.config.retrieval == "hybrid-jev":
-            shortlist = await rerank(self.jev, q.id, shortlist)
-        else:
-            shortlist = [p for p in lexical_rank(shortlist) if p.score > 0]
-        packet = diverse_packet(shortlist, self.config.evidence_chars)
-        self.store.event(
-            q.id,
-            "retrieval_summary",
-            {
-                "queries": queries,
-                "available_pages": sum(p is not None for p in pages.values()),
-                "passage_count": len(passages),
-                "packet": [{"id": p.id, "score": p.score} for p in packet],
-            },
+        packet, outcome = await research(
+            self,
+            q,
+            self.plans.get(q.id, []),
+            self.round_numbers.get(q.id, 0),
+            self.research_outcomes.setdefault(q.id, []),
         )
+        self.research_outcomes[q.id].append(outcome)
         return packet
 
-    async def assess(self, q: QuestionView, candidate: Candidate, evidence: list) -> dict:
+    async def assess(
+        self, q: QuestionView, candidate: Candidate, evidence: list, artifacts=(), outcomes=()
+    ) -> dict:
+        key = digest(
+            {
+                "assessment_version": 3,
+                "question": record(q),
+                "candidate": record(candidate),
+                "evidence": [record(p) for p in evidence],
+                "artifacts": list(artifacts),
+                "outcomes": list(outcomes),
+                "config_hash": self.config.hash,
+            }
+        )
+        cached = self.store.cached(q.id, key)
+        if cached is not None:
+            self.store.event(
+                q.id, "assessment_replay", {"candidate_id": candidate.id, "request_hash": key}
+            )
+            return cached
         semantic = self.config.arm in {"J3", "J23", "Jfull", "M"}
         checks = await verify(self.jev, q.id, candidate, evidence, semantic)
         self.store.event(q.id, "citation_checks", checks)
-        constraint_failures = (
-            await constraints(self.jev, q.id, q.question, candidate)
+        audit = await audit_dependencies(
+            self.gateway,
+            self.jev,
+            q,
+            candidate,
+            evidence,
+            list(artifacts),
+            list(outcomes),
+            semantic=semantic,
+        )
+        constraint_checks = (
+            await constraints(self.jev, q.id, q.question, candidate, evidence, artifacts, audit)
             if self.config.adaptive and candidate.answer.strip()
-            else []
+            else {"constraints": {"status": "not_applicable"}}
         )
         assessment = {
             "citation_checks": checks,
             "citation_failures": failures(checks),
             "missing_source_claims": missing_source_claims(candidate),
-            "constraint_failures": constraint_failures,
+            "constraint_checks": constraint_checks,
+            "constraint_failures": [
+                k
+                for k, v in constraint_checks.items()
+                if v["status"] in {"failed", "unavailable", "not_run"}
+            ],
+            **audit,
         }
-        assessment["accepted"] = bool(candidate.answer.strip()) and not any(
-            assessment[k]
-            for k in ("citation_failures", "missing_source_claims", "constraint_failures")
+        assessment["eligible"] = (
+            bool(candidate.answer.strip())
+            and audit["coverage"]["status"] == "passed"
+            and not any(
+                assessment[k]
+                for k in ("citation_failures", "missing_source_claims", "constraint_failures")
+            )
+            and not any(
+                c["citation"]["critical"] and c["status"] != "passed" for c in checks if semantic
+            )
         )
+        assessment["accepted"] = assessment[
+            "eligible"
+        ]  # Legacy trace field, separate from coverage.
         self.store.event(q.id, "candidate_checks", {"candidate_id": candidate.id, **assessment})
-        if candidate.answer.strip() and not assessment["accepted"]:
+        if candidate.answer.strip() and not assessment["eligible"]:
             self.store.event(
                 q.id,
                 "candidate_rejected",
                 {
                     "candidate_id": candidate.id,
-                    "reason": "unresolved critical evidence or answer constraints",
+                    "reason": "unresolved critical dependencies or answer checks",
                     **assessment,
                 },
             )
+        self.store.cache(q.id, key, assessment)
         return assessment
 
     async def solve(self, q: QuestionView) -> Prediction:
         previous = self.store.db.execute("SELECT state FROM items WHERE id=?", (q.id,)).fetchone()
         started = json.loads(previous[0])["started_at"] if previous and previous[0] else time.time()
         self.starts[q.id] = started
+        self.research_outcomes[q.id] = []
         candidates, selected, status, error = [], None, "completed", ""
         assessments, evidence_ledger, artifacts = {}, {}, []
         evidence = []
@@ -236,27 +214,42 @@ class Solver:
             async with asyncio.timeout(remaining):
                 candidates = await self.initial(q)
                 initial_candidates = candidates[:]
+                current = candidates[0]
                 if self.config.arm not in {"B0", "B1"}:
-                    current = candidates[0]
+                    self.transition(q.id, Phase.PLAN)
+                    assessments[current.id] = await self.assess(q, current, [])
                     for round_no in range(self.config.limits.rounds):
-                        if not (current.queries or current.gaps or current.code):
+                        assessment = assessments[current.id]
+                        self.plans[q.id] = assessment["queries"]
+                        self.round_numbers[q.id] = round_no
+                        pending_code = current.code and not any(
+                            a.get("code_hash") == digest(current.code) for a in artifacts
+                        )
+                        if assessment["eligible"] and not (self.plans[q.id] or pending_code):
                             break
                         action = "search"
                         if self.config.adaptive:
                             self.transition(q.id, Phase.ROUTE)
-                            actions = []
                             counts = self.budget.snapshot(q.id)["counts"]
+                            actions = []
                             if (
-                                (current.queries or current.gaps)
+                                self.plans[q.id]
                                 and counts.get("search", 0) < self.config.limits.search
                                 and counts.get("fetch", 0) < self.config.limits.fetch
                             ):
                                 actions.append("search")
-                            if current.code and counts.get("code", 0) < self.config.limits.code:
+                            if pending_code and counts.get("code", 0) < self.config.limits.code:
                                 actions.append("code")
                             actions.append("finalize")
                             action = (
-                                await route(self.jev, q.id, q.question, current, actions)
+                                await route(
+                                    self.jev,
+                                    q.id,
+                                    q.question,
+                                    current,
+                                    actions,
+                                    dependency_checks=assessment,
+                                )
                                 if len(actions) > 1
                                 else "finalize"
                             )
@@ -266,28 +259,38 @@ class Solver:
                             self.transition(q.id, Phase.RESEARCH, round=round_no)
                             findings = await self.research(q, current)
                             evidence_ledger.update((p.id, p) for p in findings)
-                            # New findings get context first; earlier citations
-                            # remain verifiable in the ledger even when a bounded
-                            # packet cannot include their full passages again.
                             cited = {c.passage_id for c in current.citations}
                             evidence = diverse_packet(
                                 findings
                                 + [p for p in evidence_ledger.values() if p.id in cited]
                                 + evidence,
                                 self.config.evidence_chars,
+                                self.config.relevance.packet,
+                                alternative_slots=self.config.relevance.alternative_slots,
                             )
-                        round_artifacts = []
-                        if current.code:
+                        if pending_code:
                             self.transition(q.id, Phase.CODE)
-                            round_artifacts.append(await self.sandbox.execute(q.id, current.code))
-                            artifacts.extend(round_artifacts)
+                            try:
+                                artifacts.append(await self.sandbox.execute(q.id, current.code))
+                            except BudgetExceeded:
+                                self.store.event(
+                                    q.id,
+                                    "code_unavailable",
+                                    {
+                                        "status": "not_run",
+                                        "code_hash": digest(current.code),
+                                        "reason": "execution allowance or budget exhausted",
+                                    },
+                                )
                         elif action == "code":
                             self.transition(q.id, Phase.CODE)
                         context = {
-                            "task": "Compare the previous answer with the findings and check artifacts. Retain a sound answer when findings add no useful evidence; correct it when warranted. Declare and cite only critical facts used from the supplied passages.",
+                            "task": "Resolve the dependency checks against the original question and actual findings. Correct contradicted answers, including conclusions absent from earlier drafts. Explain the checkable basis of every critical dependency. Search failures and snippets do not establish or refute facts. Repaired code must be executed before relying on it.",
                             "previous": record(current),
+                            "dependency_checks": assessment,
                             "evidence": [record(p) for p in evidence],
-                            "tool_artifacts": round_artifacts,
+                            "tool_artifacts": artifacts,
+                            "research_outcomes": planner_outcomes(self.research_outcomes[q.id]),
                         }
                         self.transition(q.id, Phase.REVISE)
                         response = await self.gateway.generate(
@@ -296,17 +299,30 @@ class Solver:
                         revised = Candidate.parse(response, f"revised-{round_no}")
                         candidates.append(revised)
                         self.transition(q.id, Phase.VERIFY)
-                        assessment = await self.assess(q, revised, list(evidence_ledger.values()))
+                        assessment = await self.assess(
+                            q,
+                            revised,
+                            list(evidence_ledger.values()),
+                            artifacts,
+                            self.research_outcomes[q.id],
+                        )
                         assessments[revised.id] = assessment
-                        if revised.answer.strip() and not assessment["accepted"]:
+                        # Later rounds can search again or execute repaired code. At the last
+                        # round allow one bounded prose/citation repair, still fully assessed.
+                        if (
+                            revised.answer.strip()
+                            and not assessment["eligible"]
+                            and round_no == self.config.limits.rounds - 1
+                        ):
                             self.transition(q.id, Phase.REVISE)
                             repair_context = {
                                 **context,
                                 "previous": record(revised),
+                                "dependency_checks": assessment,
                                 "citation_failures": assessment["citation_failures"],
                                 "constraint_failures": assessment["constraint_failures"],
                                 "missing_source_claims": assessment["missing_source_claims"],
-                                "task": "Repair the listed evidence or constraint failures. Cite each declared source claim with matching claim text and an exact quote. You may instead solve independently, explaining the independent verification. Do not invent support; leave the answer empty if it cannot be established.",
+                                "task": "Repair the failed dependency, citation and answer checks using actual evidence/artifacts. Supply a corrected candidate before selection. A claim of independent reasoning is insufficient: supply its checkable basis. Newly generated code is unexecuted. Leave the answer empty if critical dependencies cannot be established.",
                             }
                             response = await self.gateway.generate(
                                 q, repair_context, f"repair-{round_no}", final=True
@@ -314,33 +330,17 @@ class Solver:
                             revised = Candidate.parse(response, f"repair-{round_no}")
                             candidates.append(revised)
                             self.transition(q.id, Phase.VERIFY)
-                            assessment = await self.assess(
-                                q, revised, list(evidence_ledger.values())
-                            )
-                            assessments[revised.id] = assessment
-                        # Invalid drafts remain in the private oracle history but
-                        # never become a selectable answer or a trusted premise.
-                        if revised.answer.strip() and not assessment["accepted"]:
-                            revised = Candidate(
-                                f"unresolved-{round_no}",
-                                "",
-                                0,
-                                "The latest draft failed evidence or answer checks.",
-                                gaps=revised.gaps,
-                                queries=revised.queries,
-                                code=revised.code,
+                            assessments[revised.id] = await self.assess(
+                                q,
+                                revised,
+                                list(evidence_ledger.values()),
+                                artifacts,
+                                self.research_outcomes[q.id],
                             )
                         current = revised
-                        if self.config.adaptive:
+                        if self.config.adaptive and round_no + 1 < self.config.limits.rounds:
                             counts = self.budget.snapshot(q.id)["counts"]
                             envelope = {
-                                "item_usd": max(
-                                    0, self.config.limits.item_usd - self.store.cost(q.id)
-                                ),
-                                "run_usd": max(0, self.config.limits.run_usd - self.store.cost()),
-                                "time_s": max(
-                                    0, self.config.limits.deadline_s - (time.time() - started)
-                                ),
                                 "rounds": self.config.limits.rounds - round_no - 1,
                                 "search_calls": max(
                                     0, self.config.limits.search - counts.get("search", 0)
@@ -348,43 +348,56 @@ class Solver:
                                 "fetch_calls": max(
                                     0, self.config.limits.fetch - counts.get("fetch", 0)
                                 ),
+                                "code_calls": max(
+                                    0, self.config.limits.code - counts.get("code", 0)
+                                ),
+                                "item_usd": max(
+                                    0, self.config.limits.item_usd - self.store.cost(q.id)
+                                ),
+                                "time_s": max(
+                                    0, self.config.limits.deadline_s - (time.time() - started)
+                                ),
                             }
-                            actions = (
-                                ["search", "finalize"]
-                                if envelope["rounds"]
-                                and envelope["search_calls"]
-                                and envelope["fetch_calls"]
-                                else ["finalize"]
-                            )
+                            actions = ["finalize"]
+                            if envelope["search_calls"] and envelope["fetch_calls"]:
+                                actions.insert(0, "search")
+                            if current.code and envelope["code_calls"]:
+                                actions.insert(0, "code")
                             decision = (
-                                await continuation(self.jev, q.id, current, envelope, actions)
+                                await continuation(
+                                    self.jev,
+                                    q.id,
+                                    current,
+                                    envelope,
+                                    actions,
+                                    dependency_checks=assessments[current.id],
+                                    research_outcomes=planner_outcomes(
+                                        self.research_outcomes[q.id]
+                                    ),
+                                )
                                 if len(actions) > 1
                                 else "finalize"
                             )
                             if decision == "finalize":
                                 break
-                    # Validate earlier candidates too. Checking an old citation
-                    # against today's packet would wrongly lose its provenance;
-                    # the item-scoped ledger retains every exposed passage.
-                    for candidate in initial_candidates:
+                    # Every draft sees the same final evidence and artifacts. Identical
+                    # rechecks replay from cache; stale acceptance never bypasses new facts.
+                    for candidate in candidates:
                         assessments[candidate.id] = await self.assess(
-                            q, candidate, list(evidence_ledger.values())
+                            q,
+                            candidate,
+                            list(evidence_ledger.values()),
+                            artifacts,
+                            self.research_outcomes[q.id],
                         )
-                    pool = [c for c in reversed(candidates) if assessments[c.id]["accepted"]]
+                    pool = [c for c in reversed(candidates) if assessments[c.id]["eligible"]]
                 else:
                     pool = candidates
                 self.transition(q.id, Phase.SELECT)
                 selector = self.config.selector
                 if selector == "auto":
-                    selector = (
-                        "vote"
-                        if self.config.arm in {"B0", "B1"}
-                        or len(candidates) == len(initial_candidates)
-                        else "backbone"
-                    )
+                    selector = "vote" if self.config.arm in {"B0", "B1"} else "backbone"
                 if selector == "vote" and self.config.arm not in {"B0", "B1"}:
-                    # Revisions are correlated, not independent votes. The
-                    # deterministic ablation uses the latest validated draft.
                     pool = pool[:1] + [
                         c for c in pool[1:] if c.id in {i.id for i in initial_candidates[1:]}
                     ]
@@ -399,9 +412,7 @@ class Solver:
                     evidence_ledger=list(evidence_ledger.values()),
                     tool_artifacts=artifacts,
                     assessments=assessments,
-                    latest_verification=current.verification
-                    if self.config.arm not in {"B0", "B1"}
-                    else "",
+                    latest_verification=current.verification,
                 )
                 self.store.event(
                     q.id,

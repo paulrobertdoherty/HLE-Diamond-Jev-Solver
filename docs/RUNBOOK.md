@@ -141,21 +141,22 @@ This uses the [Search API](https://docs.perplexity.ai/docs/search/overview). Our
 
 The [published standard Search price](https://docs.perplexity.ai/docs/getting-started/pricing), checked on 2026-10-31, is $0.005 per successful request with no model-token charges. Set `search_usd: 0.005` after checking the rate for your account. SDK retries are disabled. The supervisor handles transient errors, respects numeric or HTTP-date `Retry-After` headers, and counts each attempt against the configured limits. Failed attempts retain conservative reservations even when the service does not bill them.
 
-For the existing 50-question development split, export the backbone and Jev credentials as usual, then validate the new evidence workflow:
+For the existing development split, use the [evidence-v3 setup and smoke-test instructions](EVIDENCE_V3.md). Validation and estimation are offline:
 
 ```bash
-export PERPLEXITY_API_KEY="$(tr -d '\r\n' < private/perplexity-api-key.txt)"
-jev-solver validate --config configs/sol-low.evidence-v2.j23.perplexity.json
-jev-solver estimate --config configs/sol-low.evidence-v2.j23.perplexity.json --items 50
-# Paid solver run; grading is separate.
-jev-solver run --config configs/sol-low.evidence-v2.j23.perplexity.json --questions private/sol-low-pilot-data/solver/questions.jsonl --split development --output private/sol-low-evidence-v2-j23-perplexity
+jev-solver validate --config configs/sol-low.evidence-v3.j23.perplexity.json
+jev-solver estimate --config configs/sol-low.evidence-v3.j23.perplexity.json --items 5
 ```
 
-Use a new output directory and verify the local sandbox digest before running. Validation and estimation make no paid requests. The older `sol-low.jev-*-pilot` files describe earlier exploratory settings; their recorded implementation revision is needed to reproduce the original citation gate and selection policy.
+Export `PERPLEXITY_API_KEY`, the backbone key and the TypeSafe key in the launching terminal. Verify the local sandbox digest and choose a new output directory. The $10 run cap is shared across items and may prevent a full 50-question run from finishing. The older `sol-low.jev-*-pilot` and evidence-v2 files describe historical settings; their recorded implementation revisions are required to reproduce their behavior.
 
-### Evidence-v2 development comparison
+### Evidence-v3 development comparison
 
-Evidence-v2 fixes the failure paths identified in the Sol/Jev pilot. Candidates list `source_claims` only for critical facts used from retrieved passages; each requires a matching critical citation. Independent derivations do not need citations merely because a page was retrieved. Fabricated spans and unresolved critical support or constraint failures still exclude a draft after one repair.
+Use [the evidence-v3 guide](EVIDENCE_V3.md) for the current dependency/check contract, TypeSafe account setup, four matched profiles, revised budgets, smoke-test commands and component/workflow metrics. The historical profiles below require their original implementation revision to reproduce their behavior.
+
+### Evidence-v2 development comparison (historical)
+
+Evidence-v2 addressed the failure paths identified in the Sol/Jev pilot. Candidates list `source_claims` only for critical facts used from retrieved passages; each requires a matching critical citation. Independent derivations do not need citations merely because a page was retrieved. Fabricated spans and unresolved critical support or constraint failures still exclude a draft after one repair.
 
 The controller retains validated earlier answers. The default `selector: auto` uses deterministic voting for B0/B1 and backbone selection after tool revisions; the study configurations explicitly select `backbone`. That extra charged model call receives distinct anonymized answers, their checks and cited-source provenance, the current evidence packet and code artifacts. It can recover an earlier answer, accept a correction or select none-supported. Source support alone is not whole-answer correctness, and source-dependency declarations are model judgments. Explicit `selector: vote` remains a deterministic tool ablation that favors the latest validated draft rather than treating revisions as independent votes.
 
@@ -204,7 +205,7 @@ jev-solver component-eval --config configs/synthetic.json --cases tests/fixtures
 jev-solver component-eval --config configs/synthetic.json --cases tests/fixtures/components.jsonl --output private/components-lexical --judge lexical
 ```
 
-`--judge backbone` enables a generative verifier baseline with its charged calls. Component rows have `id`, `stage`, `state` and `expected`. Expected labels stay outside provider requests. J2 scores use a normalized 0–1 feature; they are not correctness probabilities. Noul has no separate confidence. The deliberately limited synthetic semantic judge fails the negative citation fixture, demonstrating that diagnostics report negative results too.
+`--judge backbone` enables a generative verifier baseline with its charged calls. Component rows have `id`, `stage`, `state` and `expected`. J2 state must include the original `question`, a neutral `missing_fact`, the actual `search_query`, and `passage`. See [evidence-v3 evaluation](EVIDENCE_V3.md#component-and-workflow-evaluation) for packet labels, confusion matrices and offline `workflow-eval` coverage/selection metrics. Expected labels stay outside provider requests. J2 scores use a normalized 0–1 feature; they are not correctness probabilities. Noul has no separate confidence. The deliberately limited synthetic semantic judge fails the negative citation fixture, demonstrating that diagnostics report negative results too.
 
 For an optional extended-track corpus, supply vetted JSONL documents with exactly `url`, `title`, `text`, `license`, and `ingested_at`:
 

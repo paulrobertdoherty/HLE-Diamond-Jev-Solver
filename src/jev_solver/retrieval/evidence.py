@@ -14,7 +14,15 @@ def words(text: str) -> list[str]:
     return re.findall(r"\w+", text.casefold())
 
 
-def chunk_page(page: dict, subquestion: str, size: int = 2400) -> list[EvidencePassage]:
+def chunk_page(
+    page: dict,
+    subquestion: str,
+    size: int = 2400,
+    *,
+    question: str = "",
+    search_query: str = "",
+    dependency_id: str = "",
+) -> list[EvidencePassage]:
     text = page["text"]
     # Split at paragraph boundaries where possible; offsets always refer to stored source text.
     spans = []
@@ -40,6 +48,9 @@ def chunk_page(page: dict, subquestion: str, size: int = 2400) -> list[EvidenceP
             page["filter_version"],
             title=page.get("title", ""),
             subquestion=subquestion,
+            question=question,
+            search_query=search_query,
+            dependency_id=dependency_id,
         )
         for a, b in spans
         if text[a:b].strip()
@@ -81,12 +92,16 @@ def retrieval_shortlist(passages: list[EvidencePassage], limit: int = 20) -> lis
 
 
 def diverse_packet(
-    passages: list[EvidencePassage], chars: int, limit: int = 6
+    passages: list[EvidencePassage], chars: int, limit: int = 6, *, alternative_slots: int = 1
 ) -> list[EvidencePassage]:
     packet, seen, hosts = [], set(), Counter()
     used = 0
+    # Reserve bounded room for uncertain alternatives before high scores can
+    # exhaust either the character budget or the per-host allowance.
+    alternatives = [p for p in passages if p.relevance_status == "uncertain"][:alternative_slots]
+    ordered = alternatives + [p for p in passages if p.relevance_status != "uncertain"]
     queries = {}
-    for passage in passages:
+    for passage in ordered:
         queries.setdefault(passage.subquestion, deque()).append(passage)
     queues = deque(queries.values())
     while queues:
@@ -105,6 +120,22 @@ def diverse_packet(
         if len(packet) == limit:
             break
     return packet
+
+
+def rank_leads(results: list[dict], missing_fact: str) -> list[dict]:
+    """Audited snippets prioritize fetches; they never become evidence passages."""
+    return [
+        row
+        for _, row in sorted(
+            enumerate(results),
+            key=lambda pair: (
+                -lexical_score(
+                    missing_fact, pair[1].get("title", "") + " " + pair[1].get("snippet", "")
+                ),
+                pair[0],
+            ),
+        )
+    ]
 
 
 def bm25(query: str, texts: list[str]) -> list[float]:

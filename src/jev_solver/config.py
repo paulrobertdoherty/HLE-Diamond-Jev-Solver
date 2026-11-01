@@ -43,6 +43,19 @@ class Limits:
     retries: int = 1
     concurrency: int = 2
     finalization_usd: float = 0.1
+    finalization_calls: int = 2
+
+
+@dataclass(frozen=True)
+class RelevancePolicy:
+    """Experimental filtering policy; calibrate on independent development labels."""
+
+    min_score: float = 2 / 3
+    uncertain_min_score: float = 1 / 3
+    uncertain_confidence: float = 0.2
+    alternative_slots: int = 1
+    shortlist: int = 12
+    packet: int = 6
 
 
 @dataclass(frozen=True)
@@ -62,7 +75,7 @@ class Config:
     code_usd: float = 0
     sandbox_image: str = ""
     protocol_manifest: str = "protocol/manifest.json"
-    prompt_version: str = "evidence-v2"
+    prompt_version: str = "evidence-v3"
     parser_version: str = "paragraph-v1"
     seed: int = 17
     jev_failure: str = "fail"
@@ -73,6 +86,9 @@ class Config:
     retrieval: str = "lexical"
     primary_comparison: str = "J23-B2"
     departures: tuple[str, ...] = ()
+    coverage_policy: str = "critical-dependencies-v1"
+    relevance: RelevancePolicy = field(default_factory=RelevancePolicy)
+    followup_fetch_reserve: int = 1
 
     @property
     def hash(self) -> str:
@@ -83,6 +99,33 @@ class Config:
         return self.provider.kind != "mock"
 
     def validate(self) -> Config:
+        if self.coverage_policy != "critical-dependencies-v1":
+            raise ValueError("unknown verification coverage policy")
+        rp = self.relevance
+        for value in (rp.min_score, rp.uncertain_min_score, rp.uncertain_confidence):
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not 0 <= value <= 1
+            ):
+                raise ValueError("invalid relevance policy threshold")
+        if rp.uncertain_min_score > rp.min_score:
+            raise ValueError("uncertain threshold exceeds useful threshold")
+        if (
+            any(
+                type(v) is not int
+                for v in (
+                    rp.shortlist,
+                    rp.packet,
+                    rp.alternative_slots,
+                    self.followup_fetch_reserve,
+                )
+            )
+            or not 1 <= rp.packet <= rp.shortlist <= 20
+            or not 0 <= rp.alternative_slots < rp.packet
+            or self.followup_fetch_reserve < 0
+        ):
+            raise ValueError("invalid retrieval bounds")
         if self.arm not in ARMS or self.track not in {"closed", "controlled", "extended"}:
             raise ValueError("unknown arm or track")
         if (self.arm in {"B0", "B1"}) != (self.track == "closed"):
@@ -130,6 +173,7 @@ class Config:
             "calls",
             "retries",
             "concurrency",
+            "finalization_calls",
         ):
             if type(getattr(lim, key)) is not int:
                 raise ValueError(f"integer limit required: {key}")
@@ -277,6 +321,8 @@ class Config:
                 row[k] = ProviderConfig(**row[k])
         if "limits" in row:
             row["limits"] = Limits(**row["limits"])
+        if "relevance" in row:
+            row["relevance"] = RelevancePolicy(**row["relevance"])
         for k in ("additional_providers",):
             if k in row:
                 row[k] = tuple(ProviderConfig(**p) for p in row[k])

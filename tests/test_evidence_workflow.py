@@ -31,6 +31,7 @@ def response(answer, **changes):
         "code": "",
         "citations": [],
         "source_claims": [],
+        "dependencies": [],
         **changes,
     }
 
@@ -172,6 +173,8 @@ class EvidenceWorkflowTests(unittest.IsolatedAsyncioTestCase):
 
         async def generate(backbone, question, context, schema):
             result = await original(backbone, question, context, schema)
+            if "completeness" in schema.get("properties", {}):
+                return result
             if "selected" in schema.get("properties", {}):
                 selections.append(context)
                 answer = chosen(context) if callable(chosen) else chosen
@@ -179,7 +182,18 @@ class EvidenceWorkflowTests(unittest.IsolatedAsyncioTestCase):
                     (k for k, c in context["candidates"].items() if c["answer"] == answer),
                     "none-supported",
                 )
-                data = {"selected": name}
+                data = {
+                    "selected": name,
+                    "reason": "Fixture choice using checked premises.",
+                    "checked_dependencies": [
+                        d["id"]
+                        for d in context["candidates"]
+                        .get(name, {})
+                        .get("checks", {})
+                        .get("dependencies", [])
+                        if d["critical"]
+                    ],
+                }
             elif "previous" in context:
                 contexts.append(context)
                 step = next(steps)
@@ -210,7 +224,7 @@ class EvidenceWorkflowTests(unittest.IsolatedAsyncioTestCase):
                     "42",
                 )
                 with script:
-                    result = await solver.solve(QuestionView("q", "Compute the requested value."))
+                    result = await solver.solve(QuestionView("q", "Compute 6 * 7."))
                 self.assertEqual((result.status, result.answer), ("completed", "42"))
                 self.assertTrue(contexts[0]["evidence"])
                 self.assertEqual(len(contexts), 1)  # No blanket citation repair.
@@ -234,7 +248,7 @@ class EvidenceWorkflowTests(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual((result.status, result.answer), ("completed", "27"))
                     self.assertEqual(result.candidate_answers, ("28", "27"))
                     self.assertEqual(
-                        {c["answer"] for c in selections[0]["candidates"].values()}, {"27", "28"}
+                        {c["answer"] for c in selections[0]["candidates"].values()}, {"27"}
                     )
                     self.assertIn(QUOTE, selections[0]["evidence"][0]["text"])
                     supported = next(
@@ -252,7 +266,7 @@ class EvidenceWorkflowTests(unittest.IsolatedAsyncioTestCase):
                     self.assertTrue(
                         all("confidence" not in c for c in selections[0]["candidates"].values())
                     )
-                    self.assertEqual(solver.budget.snapshot("q")["counts"]["model"], 3)
+                    self.assertEqual(solver.budget.snapshot("q")["counts"]["model"], 6)
 
     async def test_missing_source_claims_reject_drafts_without_erasing_an_earlier_answer(self):
         for backend in ("brave", "perplexity"):
@@ -265,7 +279,7 @@ class EvidenceWorkflowTests(unittest.IsolatedAsyncioTestCase):
                     "42",
                 )
                 with script:
-                    result = await solver.solve(QuestionView("q", "Compute the requested value."))
+                    result = await solver.solve(QuestionView("q", "Compute 6 * 7."))
                 self.assertEqual((result.status, result.answer), ("completed", "42"))
                 self.assertEqual(contexts[1]["missing_source_claims"], [QUOTE])
                 self.assertEqual(
@@ -287,7 +301,7 @@ class EvidenceWorkflowTests(unittest.IsolatedAsyncioTestCase):
                     "42",
                 )
                 with script:
-                    result = await solver.solve(QuestionView("q", "Compute the requested value."))
+                    result = await solver.solve(QuestionView("q", "Compute 6 * 7."))
                 self.assertEqual((result.status, result.answer), ("completed", "42"))
                 self.assertEqual(selections[0]["evidence"], [])
                 self.assertTrue(self.events(solver, "search_unavailable"))
@@ -303,19 +317,21 @@ class EvidenceWorkflowTests(unittest.IsolatedAsyncioTestCase):
         with script:
             result = await solver.solve(QuestionView("q", "Find the fictional element value."))
         self.assertEqual((result.status, result.answer, result.abstained), ("completed", "", True))
-        self.assertIn(QUOTE, selections[0]["evidence"][0]["text"])
-        self.assertIn("refutes", selections[0]["latest_verification"])
-        self.assertIn("Reject an older answer", selections[0]["task"])
+        self.assertEqual(selections, [])  # The contradicted old draft is ineligible.
+        checks = self.events(solver, "candidate_checks")
+        self.assertFalse(
+            next(c for c in reversed(checks) if c["candidate_id"] == "initial-0")["eligible"]
+        )
         self.assertIsNone(self.events(solver, "candidate_selection")[0]["selected"])
 
     async def test_semantically_contradicted_citations_are_never_selectable(self):
         solver = self.solver()
         request = solver.jev.request
 
-        async def judge(item, stage, state, questions):
+        async def judge(item, stage, state, questions, **kwargs):
             if stage == "J3":
                 return {"support": Judgment("J3", "support", "contradicted", 0.9, "fixture")}
-            return await request(item, stage, state, questions)
+            return await request(item, stage, state, questions, **kwargs)
 
         script, _, selections = self.model(
             response("42", queries=["cobalt code"]),
@@ -323,7 +339,7 @@ class EvidenceWorkflowTests(unittest.IsolatedAsyncioTestCase):
             "42",
         )
         with script, patch.object(solver.jev, "request", judge):
-            result = await solver.solve(QuestionView("q", "Compute the requested value."))
+            result = await solver.solve(QuestionView("q", "Compute 6 * 7."))
         self.assertEqual(result.answer, "42")
         self.assertEqual([c["answer"] for c in selections[0]["candidates"].values()], ["42"])
         self.assertEqual(len(self.events(solver, "candidate_rejected")), 2)
@@ -384,7 +400,7 @@ class EvidenceWorkflowTests(unittest.IsolatedAsyncioTestCase):
             "42",
         )
         with script:
-            result = await solver.solve(QuestionView("q", "Compute the requested value."))
+            result = await solver.solve(QuestionView("q", "Compute 6 * 7."))
         self.assertEqual(result.answer, "42")
         self.assertEqual(
             [call.args[0].split("/")[-2] for call in solver.web.backend.fetch.await_args_list],

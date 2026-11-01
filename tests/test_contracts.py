@@ -103,6 +103,7 @@ class RecordTests(unittest.TestCase):
             "code": "",
             "citations": [],
             "source_claims": [],
+            "dependencies": [],
         }
         for value in (float("nan"), -0.1, 1.1, True, "0.5"):
             with self.subTest(value=value), self.assertRaises(ValueError):

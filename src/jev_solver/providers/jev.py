@@ -15,7 +15,7 @@ class Jev:
         self.client = client
 
     async def request(
-        self, item: str, stage: str, state: dict, questions: dict
+        self, item: str, stage: str, state: dict, questions: dict, *, final: bool = False
     ) -> dict[str, Judgment]:
         request = {
             "stage": stage,
@@ -36,7 +36,11 @@ class Jev:
                 raise ValueError("Jev question exceeds conservative 32k token bound")
         try:
             response = await self.budget.execute(
-                item, "jev", upper_cost(self.config.jev), lambda: self._call(state, questions)
+                item,
+                "jev",
+                upper_cost(self.config.jev),
+                lambda: self._call(state, questions),
+                final=final,
             )
             self.store.event(item, "jev_response", {"request_hash": key, **response})
             if response["model"] != self.config.jev.model:
@@ -131,7 +135,9 @@ class Jev:
         from typesafe_sdk import AsyncTypeSafeClient, Choice, Noul, RetryPolicy, Score
 
         if self.client is None:
-            self.client = AsyncTypeSafeClient(retry=RetryPolicy(max_retries=0), timeout=120)
+            self.client = AsyncTypeSafeClient(
+                retry=RetryPolicy(max_retries=0), timeout=p.request_timeout_s
+            )
         classes = {"choice": Choice, "noul": Noul, "score": Score}
         specs = {
             k: classes[q["type"]](**{f: v for f, v in q.items() if f != "type"})

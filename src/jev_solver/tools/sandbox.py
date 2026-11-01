@@ -64,6 +64,7 @@ class Sandbox:
             return {**output, "cost_usd": self.config.code_usd, "usage": {}}
 
         result = await self.budget.execute(item, "code", self.config.code_usd, call)
+        result = {**result, "id": key, "code_hash": digest(code), "code": code}
         self.store.event(item, "code", {"request_hash": key, **result})
         self.store.cache(item, key, result)
         return result

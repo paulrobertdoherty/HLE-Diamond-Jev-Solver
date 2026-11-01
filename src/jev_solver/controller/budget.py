@@ -46,6 +46,9 @@ class Budget:
                 cap = getattr(limits, kind, limits.calls)
                 if sum(counts.values()) >= limits.calls:
                     raise BudgetExceeded("call limit")
+                call_reserve = min(limits.finalization_calls, max(0, limits.calls - 1))
+                if not final and sum(counts.values()) >= limits.calls - call_reserve:
+                    raise BudgetExceeded("finalization call reserve")
                 if counts.get(kind, 0) >= cap:
                     raise CallLimitExceeded(kind)
                 reserve = 0 if final else limits.finalization_usd

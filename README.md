@@ -27,7 +27,7 @@ The synthetic provider uses arithmetic and a fictional reference, with no creden
 | --- | --- |
 | B0 | One backbone call, no tools |
 | B1 | Independent same-model samples and conservative answer voting, no tools |
-| B2 | Fixed search/code/revision workflow, lexical passage ranking and exact citation spans |
+| B2 | Dependency audits, bounded search/code/revision, lexical ranking and exact citation spans |
 | J2 / J3 / J23 | B2 with Jev reranking / citation support checks / both |
 | Jfull | Independent candidates, admissible routing, constraint checks, candidate selection and bounded continuation |
 | M | Independent configured OpenAI/OpenRouter models under one shared budget |
@@ -49,7 +49,9 @@ For OpenRouter, copy [`configs/openrouter.template.json`](configs/openrouter.tem
 
 For a $27 account balance, the [Sol low pilot](docs/SOL_PILOT.md) provides a pinned configuration for a 50-question B0 development run with a $20 cap and no retries.
 
-Live tool runs can select `search_backend: perplexity` with `PERPLEXITY_API_KEY` and an explicit `search_usd`. The official Perplexity Search SDK returns sources for the existing backbone and Jev pipeline. Both Brave and Perplexity use the evidence-v2 workflow: source-dependent citation requirements, validated candidate history, and final selection using the retrieved evidence and check artifacts. See [Perplexity search setup](docs/RUNBOOK.md#perplexity-search) and the [matched B2/J23 development configurations](docs/RUNBOOK.md#evidence-v2-development-comparison). These fixes address observed failure paths; improved benchmark accuracy still requires measurement.
+Live tool runs can select `search_backend: perplexity` with `PERPLEXITY_API_KEY` and an explicit `search_usd`. The official Perplexity Search SDK returns sources for the existing backbone and Jev pipeline. Both Brave and Perplexity now use evidence-v3: independent dependency audits, feedback-driven research, verification coverage, and selection tied to actual checks. See [Perplexity search setup](docs/RUNBOOK.md#perplexity-search) and the [new matched B2/J23 profiles and TypeSafe setup](docs/EVIDENCE_V3.md). The 50-question development reruns reduced wrong answers but lowered full-set accuracy and increased cost: [Brave v3 evaluation](docs/BRAVE_EVIDENCE_V3_EVALUATION.md) and [Perplexity v3 evaluation](docs/PERPLEXITY_EVIDENCE_V3_EVALUATION.md).
+
+The [search root-cause investigation](docs/JEV_SEARCH_ROOT_CAUSE.md) traces the remaining verification bypass, evidence loss and research/selection limits to code and saved runs. Its repository fixes are implemented in [evidence-v3](docs/EVIDENCE_V3.md), which includes exact TypeSafe account steps, changed budgets and the remaining labeling/evaluation work. No customer Jev training or classifier registration is needed.
 
 ## Checks
 

@@ -62,6 +62,61 @@ class EvidencePassage:
     subquestion: str = ""
     score: float | None = None
     confidence: float | None = None
+    question: str = ""
+    search_query: str = ""
+    dependency_id: str = ""
+    relevance_status: str = "not_run"
+
+
+CHECK_STATUSES = ("not_run", "not_applicable", "unavailable", "passed", "failed")
+DEPENDENCY_KINDS = ("factual", "derived", "visual", "numerical")
+
+
+@dataclass(frozen=True)
+class Dependency:
+    """A necessary premise, independent of whether it came from a retrieved source."""
+
+    id: str
+    kind: str
+    statement: str
+    critical: bool
+    basis: str = ""
+    passage_ids: tuple[str, ...] = ()
+    artifact_ids: tuple[str, ...] = ()
+    code_hash: str = ""
+    image_indices: tuple[int, ...] = ()
+
+    @classmethod
+    def parse(cls, row: dict) -> Dependency:
+        fields = set(cls.__dataclass_fields__)
+        if not isinstance(row, dict) or set(row) != fields:
+            raise ValueError("malformed dependency fields")
+        if (
+            any(
+                not isinstance(row[k], str)
+                for k in ("id", "kind", "statement", "basis", "code_hash")
+            )
+            or not row["id"].strip()
+            or not row["statement"].strip()
+            or row["kind"] not in DEPENDENCY_KINDS
+            or type(row["critical"]) is not bool
+        ):
+            raise ValueError("invalid dependency")
+        for key in ("passage_ids", "artifact_ids", "image_indices"):
+            if not isinstance(row[key], list):
+                raise ValueError("dependency references must be lists")
+        if any(
+            not isinstance(v, str) or not v.strip()
+            for key in ("passage_ids", "artifact_ids")
+            for v in row[key]
+        ) or any(type(v) is not int or v < 0 for v in row["image_indices"]):
+            raise ValueError("invalid dependency reference")
+        return cls(
+            **{
+                **row,
+                **{k: tuple(row[k]) for k in ("passage_ids", "artifact_ids", "image_indices")},
+            }
+        )
 
 
 @dataclass(frozen=True)
@@ -99,6 +154,7 @@ class Candidate:
     code: str = ""
     citations: tuple[Citation, ...] = ()
     source_claims: tuple[str, ...] = ()
+    dependencies: tuple[Dependency, ...] = ()
 
     @classmethod
     def parse(cls, row: dict, candidate_id: str) -> Candidate:
@@ -111,6 +167,7 @@ class Candidate:
             "code",
             "citations",
             "source_claims",
+            "dependencies",
         }
         if set(row) != required:
             raise ValueError("malformed candidate fields")
@@ -123,6 +180,11 @@ class Candidate:
             raise ValueError("source claims must be nonempty")
         if not isinstance(row["citations"], list):
             raise ValueError("candidate citations must be a list")
+        if not isinstance(row["dependencies"], list) or len(row["dependencies"]) > 12:
+            raise ValueError("candidate requires at most twelve atomic dependencies")
+        dependencies = tuple(Dependency.parse(d) for d in row["dependencies"])
+        if len({d.id for d in dependencies}) != len(dependencies):
+            raise ValueError("duplicate dependency id")
         return cls(
             candidate_id,
             row["answer"],
@@ -133,6 +195,7 @@ class Candidate:
             row["code"],
             tuple(Citation.parse(c) for c in row["citations"]),
             tuple(row["source_claims"]),
+            dependencies,
         )
 
 

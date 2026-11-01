@@ -96,7 +96,11 @@ class ExperimentTests(unittest.IsolatedAsyncioTestCase):
 
         async def fabricated(backbone, q, context, schema):
             response = await original(backbone, q, context, schema)
-            if q.id == "synthetic-reference-1" and context.get("evidence"):
+            if (
+                q.id == "synthetic-reference-1"
+                and context.get("evidence")
+                and "answer" in schema.get("properties", {})
+            ):
                 candidate = json.loads(response["text"])
                 candidate["citations"][0]["quote"] = "A fabricated quote."
                 response["text"] = json.dumps(candidate)
@@ -123,7 +127,10 @@ class ExperimentTests(unittest.IsolatedAsyncioTestCase):
                         raise ProviderError("source unavailable")
                     return await original(solver, q, candidate)
 
-                config = replace(Config(), limits=replace(Limits(), calls=1))
+                config = replace(
+                    Config(),
+                    limits=replace(Limits(), calls=1 if status == "budget_exceeded" else 30),
+                )
                 directory = self.root / status
                 with patch.object(Solver, "research", fail_after_initial):
                     await run(config, self.questions, directory)
@@ -358,6 +365,18 @@ class ExperimentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["metrics"]["J2"]["count"], 2)
         self.assertEqual(result["metrics"]["J3"]["accuracy"], 0.5)
 
+    async def test_historical_grades_export_without_new_reserve_fields(self):
+        directory = self.root / "historical"
+        await run(Config(arm="B0", track="closed"), self.questions, directory)
+        await grade(directory, self.labels, self.root / "historical-eval")
+        artifact = self.root / "historical-eval/grades.json"
+        data = json.loads(artifact.read_text())
+        del data["manifest"]["config"]["limits"]["finalization_calls"]
+        artifact.write_text(json.dumps(data))
+        export_report(artifact, self.root / "historical-public")
+        report = json.loads((self.root / "historical-public/report.json").read_text())
+        self.assertNotIn("finalization_calls", report["budgets"])
+
     async def test_extended_frozen_corpus_is_versioned_and_used(self):
         source = self.root / "documents.jsonl"
         source.write_text(
@@ -415,7 +434,7 @@ class ControllerRegressionTests(unittest.IsolatedAsyncioTestCase):
                 candidate = json.loads(response["text"])
                 candidate["queries"] = ["cobalt fact one", "cobalt fact two", "cobalt fact three"]
                 response["text"] = json.dumps(candidate)
-            else:
+            elif "previous" in context:
                 contexts.append(context)
             return response
 
@@ -430,8 +449,8 @@ class ControllerRegressionTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_tool_caps_keep_evidence_and_allow_final_revision(self):
         for limits, expected in (
-            (replace(Limits(), rounds=1), {"fetch": 8, "search": 3, "model": 3}),
-            (replace(Limits(), rounds=1, search=1), {"fetch": 3, "search": 1, "model": 3}),
+            (replace(Limits(), rounds=1), {"fetch": 8, "search": 3, "model": 6}),
+            (replace(Limits(), rounds=1, search=1), {"fetch": 3, "search": 1, "model": 6}),
         ):
             with self.subTest(limits=limits):
                 solver = self.solver(Config(arm="B2", limits=limits))
@@ -497,8 +516,17 @@ class ControllerRegressionTests(unittest.IsolatedAsyncioTestCase):
                     result = await solver.solve(
                         QuestionView("q", "What is the fictional cobalt code?")
                     )
-                self.assertEqual(result.status, "budget_exceeded")
-                self.assertEqual(result.answer, "")
+                if config.limits.calls == 4:
+                    self.assertEqual(result.status, "budget_exceeded")
+                    self.assertEqual(result.answer, "")
+                else:
+                    # Optional research stops, retaining an already fetched source
+                    # and enough reserved budget to finish its verification.
+                    self.assertEqual((result.status, result.answer), ("completed", "27"))
+                self.assertLessEqual(solver.store.cost("q"), config.limits.item_usd)
+                self.assertLessEqual(
+                    sum(solver.budget.snapshot("q")["counts"].values()), config.limits.calls
+                )
 
     async def test_persistent_constraints_reject_repair_and_unchecked_initial_candidates(self):
         for constraint in ("units", "scope", "assumptions", "consistency"):
@@ -511,7 +539,7 @@ class ControllerRegressionTests(unittest.IsolatedAsyncioTestCase):
                             limits=replace(Limits(), candidates=candidates, rounds=1),
                         )
                     )
-                    checker = AsyncMock(return_value=[constraint])
+                    checker = AsyncMock(return_value={constraint: {"status": "failed"}})
                     with (
                         patch("jev_solver.controller.engine.route", AsyncMock(return_value="code")),
                         patch("jev_solver.controller.engine.constraints", checker),
@@ -523,8 +551,8 @@ class ControllerRegressionTests(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(result.answer, "")
                     self.assertTrue(result.abstained)
                     self.assertIn("42", result.candidate_answers)
-                    self.assertEqual(checker.await_args_list[1].args[-1].id, "repair-0")
-                    self.assertEqual(checker.await_count, 2 + candidates)
+                    self.assertEqual(checker.await_args_list[2].args[3].id, "repair-0")
+                    self.assertEqual(checker.await_count, 3 + candidates)
                     rejected = [
                         json.loads(row[0])
                         for row in solver.store.db.execute(
@@ -537,7 +565,11 @@ class ControllerRegressionTests(unittest.IsolatedAsyncioTestCase):
         solver = self.solver(
             Config(arm="Jfull", adaptive=True, limits=replace(Limits(), candidates=1, rounds=1))
         )
-        checker = AsyncMock(side_effect=[["units"], [], ["units"]])
+
+        async def unit_checks(jev, item, question, candidate, *args):
+            return {"units": {"status": "passed" if candidate.answer == "42 m" else "failed"}}
+
+        checker = AsyncMock(side_effect=unit_checks)
         original = MockBackbone.generate
 
         async def repair_units(backbone, q, context, schema):
@@ -556,8 +588,8 @@ class ControllerRegressionTests(unittest.IsolatedAsyncioTestCase):
             result = await solver.solve(QuestionView("q", "What is 6 * 7? Include metres."))
         self.assertEqual(result.status, "completed")
         self.assertEqual(result.answer, "42 m")
-        self.assertEqual(checker.await_count, 3)
-        self.assertEqual(checker.await_args_list[1].args[-1].answer, "42 m")
+        self.assertEqual(checker.await_count, 4)
+        self.assertEqual(checker.await_args_list[2].args[3].answer, "42 m")
 
 
 class AnalysisTests(unittest.TestCase):
