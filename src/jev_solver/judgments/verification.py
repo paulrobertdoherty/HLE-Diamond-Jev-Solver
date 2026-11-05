@@ -111,7 +111,10 @@ def validate_check(value):
 
 
 def parse_audit(value):
-    if not isinstance(value, dict) or set(value) != set(AUDIT_SCHEMA["properties"]):
+    if not isinstance(value, dict) or set(value) not in (
+        set(AUDIT_SCHEMA["properties"]),
+        set(AUDIT_SCHEMA["properties"]) | {"dispositions"},
+    ):
         raise ValueError("invalid verification audit")
     for key in ("completeness", "answer_check"):
         validate_check(value[key])
@@ -120,12 +123,10 @@ def parse_audit(value):
             raise ValueError("invalid verification inventory bounds")
     ids = set()
     for row in value["dependencies"]:
-        if not isinstance(row, dict) or set(row) != set(Dependency.__dataclass_fields__) | {
-            "status",
-            "reason",
-        }:
+        if not isinstance(row, dict) or not {"status", "reason"} <= set(row):
             raise ValueError("invalid dependency check")
-        dep = Dependency.parse({k: row[k] for k in Dependency.__dataclass_fields__})
+        dep = Dependency.parse({k: v for k, v in row.items() if k not in {"status", "reason"}})
+        row.update(record(dep))
         validate_check({k: row[k] for k in ("status", "reason")})
         if dep.id in ids:
             raise ValueError("duplicate audited dependency")
@@ -164,6 +165,20 @@ def parse_audit(value):
             )
         ):
             raise ValueError("invalid verification query")
+    dispositions = value.get("dispositions", [])
+    if not isinstance(dispositions, list) or len(dispositions) > 12:
+        raise ValueError("invalid premise dispositions")
+    for action in dispositions:
+        if (
+            not isinstance(action, dict)
+            or set(action) != {"logical_id", "action", "replacement_ids", "reason"}
+            or action["action"] not in {"optional_removed", "independent_route"}
+            or not isinstance(action["logical_id"], str)
+            or not isinstance(action["reason"], str)
+            or not isinstance(action["replacement_ids"], list)
+            or any(i not in ids for i in action["replacement_ids"])
+        ):
+            raise ValueError("invalid premise disposition")
     return value
 
 
@@ -177,7 +192,34 @@ async def audit_dependencies(
     outcomes,
     *,
     semantic: bool,
+    contract=None,
+    previous_graph=(),
 ):
+    from copy import deepcopy
+    from .graph import dependency_schema, reconcile_graph, propagate_failures, STRINGS
+
+    graph_policy = gateway.config.remediation.contract == "remediation-v1"
+    schema = deepcopy(AUDIT_SCHEMA)
+    if graph_policy:
+        schema["properties"]["dependencies"]["items"] = object_schema(
+            {
+                **dependency_schema(DEPENDENCY_SCHEMA)["properties"],
+                "status": STATUS_SCHEMA,
+                "reason": {"type": "string"},
+            }
+        )
+        schema["properties"]["dispositions"] = {
+            "type": "array",
+            "items": object_schema(
+                {
+                    "logical_id": {"type": "string"},
+                    "action": {"type": "string", "enum": ["optional_removed", "independent_route"]},
+                    "replacement_ids": STRINGS,
+                    "reason": {"type": "string"},
+                }
+            ),
+        }
+        schema["required"].append("dispositions")
     context = {
         "task": AUDIT_TASK,
         "draft": record(candidate),
@@ -186,11 +228,18 @@ async def audit_dependencies(
         "tool_artifacts": artifacts,
         "research_outcomes": planner_outcomes(outcomes),
         "coverage_policy": gateway.config.coverage_policy,
+        **(
+            {
+                "question_contract": contract,
+                "previous_graph": list(previous_graph),
+                "graph_instructions": "Retain stable logical_id, premise_version, depends_on, obligations and applicability assumptions. Map every contract obligation to its necessary basis. Shared premises use one record. Do not erase conventions, chronology or construction assumptions. Optional claims may be explicitly removed; a fully checked independent route may replace a source-dependent route using dispositions. Factual premises cannot become derived by relabeling. Every new claim and premise version must be rechecked.",
+            }
+            if graph_policy
+            else {}
+        ),
     }
     try:
-        raw = await gateway.generate(
-            q, context, f"audit-{candidate.id}", schema=AUDIT_SCHEMA, final=True
-        )
+        raw = await gateway.generate(q, context, f"audit-{candidate.id}", schema=schema, final=True)
         result = parse_audit(raw)
     except (ProviderError, ValueError, KeyError, TypeError):
         # An unavailable/malformed verifier is never an empty list of failures.
@@ -245,6 +294,31 @@ async def audit_dependencies(
 
     sources = {p.id: p for p in evidence}
     executed = {a["id"]: a for a in artifacts if "id" in a}
+    if graph_policy:
+        for dep in dependencies:
+            dep["artifact_identity"] = digest(
+                {
+                    "sources": [
+                        (i, sources[i].source_hash) for i in dep["passage_ids"] if i in sources
+                    ],
+                    "artifacts": [executed[i] for i in dep["artifact_ids"] if i in executed],
+                    "contract": (contract or {}).get("hash"),
+                }
+            )
+        try:
+            dependencies, events, _ = reconcile_graph(
+                dependencies, previous_graph, contract, result.get("dispositions", [])
+            )
+            result["dependencies"] = dependencies
+            result["graph_events"] = events
+            result["graph_status"] = "passed"
+        except ValueError as error:
+            result["completeness"] = check("failed", str(error))
+            result["graph_status"] = "failed"
+        obligation_ids = {o["id"] for o in (contract or {}).get("obligations", [])}
+        covered_obligations = {o for d in dependencies if d["critical"] for o in d["obligations"]}
+        if contract is None or not obligation_ids <= covered_obligations:
+            result["completeness"] = check("failed", "Incomplete question contract coverage.")
     for dep in dependencies:
         dep["method"] = "backbone_review"
         refs = dep["passage_ids"]
@@ -316,6 +390,27 @@ async def audit_dependencies(
                 )
             else:
                 dep["image_hashes"] = [digest(q.images[i]) for i in dep["image_indices"]]
+
+    if graph_policy and contract and result.get("graph_status") == "passed":
+        propagate_failures(dependencies)
+        for dep in dependencies:
+            dep["check_provenance"] = {
+                "candidate_id": candidate.id,
+                "contract_hash": contract["hash"],
+                "input_hash": digest(
+                    {
+                        "dependency": {k: dep[k] for k in Dependency.__dataclass_fields__},
+                        "sources": [
+                            {"id": i, "hash": sources[i].source_hash}
+                            for i in dep["passage_ids"]
+                            if i in sources
+                        ],
+                        "artifacts": [executed[i] for i in dep["artifact_ids"] if i in executed],
+                        "contract_hash": contract["hash"],
+                        "candidate": record(candidate),
+                    }
+                ),
+            }
 
     required = [result["completeness"], result["answer_check"]] + [
         d for d in dependencies if d["critical"]

@@ -40,6 +40,7 @@ from .research import research
 
 
 class Phase(str, Enum):
+    CONTRACT = "contract"
     INITIAL = "initial"
     PLAN = "plan"
     ROUTE = "route"
@@ -52,7 +53,8 @@ class Phase(str, Enum):
 
 
 TRANSITIONS = {
-    None: {Phase.INITIAL},
+    None: {Phase.CONTRACT, Phase.INITIAL},
+    Phase.CONTRACT: {Phase.INITIAL},
     Phase.INITIAL: {Phase.INITIAL, Phase.PLAN, Phase.SELECT},
     Phase.PLAN: {Phase.ROUTE, Phase.RESEARCH, Phase.CODE, Phase.SELECT},
     Phase.ROUTE: {Phase.RESEARCH, Phase.CODE, Phase.SELECT},
@@ -79,6 +81,40 @@ class Solver:
         self.plans = {}
         self.round_numbers = {}
         self.research_outcomes = {}
+        self.contracts, self.graphs, self.parents = {}, {}, {}
+
+    async def question_contract(self, q):
+        if self.config.arm in {"B0", "B1"} or self.config.remediation.contract != "remediation-v1":
+            return
+        from ..judgments.graph import CONTRACT_SCHEMA, CONTRACT_TASK, parse_contract
+
+        self.transition(q.id, Phase.CONTRACT)
+        raw = await self.gateway.generate(
+            q, {"task": CONTRACT_TASK}, "question-contract", schema=CONTRACT_SCHEMA
+        )
+        contract = parse_contract(raw, q)
+        self.contracts[q.id] = contract
+        self.store.event(q.id, "question_contract", contract)
+
+    def correct_contract(self, q, raw, reason):
+        from ..judgments.graph import parse_contract
+
+        if not reason.strip() or q.id not in self.contracts:
+            raise ValueError("contract correction requires an existing contract and reason")
+        old = self.contracts[q.id]
+        corrected = parse_contract(raw, q, version=old["version"] + 1)
+        self.contracts[q.id] = corrected
+        self.store.event(
+            q.id,
+            "contract_corrected",
+            {
+                "previous": old["hash"],
+                "contract": corrected,
+                "reason": reason,
+                "invalidated_candidates": list(self.graphs.get(q.id, {})),
+            },
+        )
+        return corrected
 
     def parse_candidate(self, q, raw, identifier, evidence=()):
         candidate, traces = parse_candidate(
@@ -87,6 +123,11 @@ class Solver:
         if traces:
             self.store.event(
                 q.id, "citation_resolution", {"candidate_id": identifier, "resolutions": traces}
+            )
+        if self.config.remediation.contract == "remediation-v1":
+            history = self.graphs.setdefault(q.id, {})
+            self.parents.setdefault(q.id, {}).setdefault(
+                identifier, next(reversed(history), None) if history else None
             )
         return candidate
 
@@ -113,7 +154,15 @@ class Solver:
             # Each sample sees only the question and its own sample instruction.
             response = await self.gateway.generate(
                 q,
-                {"task": "independent initial solution", "sample": i},
+                {
+                    "task": "independent initial solution",
+                    "sample": i,
+                    **(
+                        {"question_contract": self.contracts[q.id]}
+                        if q.id in self.contracts
+                        else {}
+                    ),
+                },
                 f"initial-{i}",
                 provider=providers[i % len(providers)],
                 final=self.config.arm in {"B0", "B1"},
@@ -144,6 +193,10 @@ class Solver:
                 "artifacts": list(artifacts),
                 "outcomes": list(outcomes),
                 "config_hash": self.config.hash,
+                "contract": self.contracts.get(q.id),
+                "previous_graph": self.graphs.get(q.id, {}).get(
+                    self.parents.get(q.id, {}).get(candidate.id), []
+                ),
             }
         )
         cached = self.store.cached(q.id, key)
@@ -151,6 +204,7 @@ class Solver:
             self.store.event(
                 q.id, "assessment_replay", {"candidate_id": candidate.id, "request_hash": key}
             )
+            self.graphs.setdefault(q.id, {})[candidate.id] = cached["dependencies"]
             return cached
         semantic = self.config.arm in {"J3", "J23", "Jfull", "M"}
         self.store.event(
@@ -167,6 +221,10 @@ class Solver:
             list(artifacts),
             list(outcomes),
             semantic=semantic,
+            contract=self.contracts.get(q.id),
+            previous_graph=self.graphs.get(q.id, {}).get(
+                self.parents.get(q.id, {}).get(candidate.id), []
+            ),
         )
         constraint_checks = (
             await constraints(self.jev, q.id, q.question, candidate, evidence, artifacts, audit)
@@ -211,6 +269,19 @@ class Solver:
                 },
             )
         self.store.cache(q.id, key, assessment)
+        self.graphs.setdefault(q.id, {})[candidate.id] = assessment["dependencies"]
+        if self.config.remediation.contract == "remediation-v1":
+            self.store.event(
+                q.id,
+                "dependency_graph",
+                {
+                    "candidate_id": candidate.id,
+                    "parent": self.parents.get(q.id, {}).get(candidate.id),
+                    "contract_hash": self.contracts[q.id]["hash"],
+                    "dependencies": assessment["dependencies"],
+                    "events": audit.get("graph_events", []),
+                },
+            )
         return assessment
 
     async def solve(self, q: QuestionView) -> Prediction:
@@ -226,6 +297,7 @@ class Solver:
             if remaining <= 0:
                 raise TimeoutError("item deadline")
             async with asyncio.timeout(remaining):
+                await self.question_contract(q)
                 candidates = await self.initial(q)
                 initial_candidates = candidates[:]
                 current = candidates[0]
@@ -314,6 +386,11 @@ class Solver:
                             "evidence": [record(p) for p in evidence],
                             "tool_artifacts": artifacts,
                             "research_outcomes": planner_outcomes(self.research_outcomes[q.id]),
+                            **(
+                                {"question_contract": self.contracts[q.id]}
+                                if q.id in self.contracts
+                                else {}
+                            ),
                         }
                         self.transition(q.id, Phase.REVISE)
                         response = await self.gateway.generate(

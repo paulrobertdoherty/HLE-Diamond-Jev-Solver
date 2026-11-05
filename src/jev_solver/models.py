@@ -85,12 +85,34 @@ class Dependency:
     artifact_ids: tuple[str, ...] = ()
     code_hash: str = ""
     image_indices: tuple[int, ...] = ()
+    logical_id: str = ""
+    premise_version: int = 1
+    depends_on: tuple[str, ...] = ()
+    obligations: tuple[str, ...] = ()
+    assumptions: tuple[str, ...] = ()
 
     @classmethod
     def parse(cls, row: dict) -> Dependency:
         fields = set(cls.__dataclass_fields__)
-        if not isinstance(row, dict) or set(row) != fields:
+        legacy = fields - {
+            "logical_id",
+            "premise_version",
+            "depends_on",
+            "obligations",
+            "assumptions",
+        }
+        if not isinstance(row, dict) or set(row) not in (legacy, fields):
             raise ValueError("malformed dependency fields")
+        row = {
+            **{
+                "logical_id": "",
+                "premise_version": 1,
+                "depends_on": [],
+                "obligations": [],
+                "assumptions": [],
+            },
+            **row,
+        }
         if (
             any(
                 not isinstance(row[k], str)
@@ -111,10 +133,31 @@ class Dependency:
             for v in row[key]
         ) or any(type(v) is not int or v < 0 for v in row["image_indices"]):
             raise ValueError("invalid dependency reference")
+        if (
+            not isinstance(row["logical_id"], str)
+            or type(row["premise_version"]) is not int
+            or row["premise_version"] < 1
+        ):
+            raise ValueError("invalid premise identity/version")
+        for key in ("depends_on", "obligations", "assumptions"):
+            if not isinstance(row[key], list) or any(
+                not isinstance(i, str) or not i.strip() for i in row[key]
+            ):
+                raise ValueError("invalid graph references")
         return cls(
             **{
                 **row,
-                **{k: tuple(row[k]) for k in ("passage_ids", "artifact_ids", "image_indices")},
+                **{
+                    k: tuple(row[k])
+                    for k in (
+                        "passage_ids",
+                        "artifact_ids",
+                        "image_indices",
+                        "depends_on",
+                        "obligations",
+                        "assumptions",
+                    )
+                },
             }
         )
 

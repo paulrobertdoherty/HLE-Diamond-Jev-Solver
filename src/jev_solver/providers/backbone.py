@@ -85,6 +85,10 @@ CANDIDATE_SCHEMA = {
 
 def candidate_schema(config):
     schema = deepcopy(CANDIDATE_SCHEMA)
+    if config.remediation.contract == "remediation-v1":
+        from ..judgments.graph import dependency_schema
+
+        schema["properties"]["dependencies"]["items"] = dependency_schema(DEPENDENCY_SCHEMA)
     if config.remediation.citations == "remediation-v1":
         citation = schema["properties"]["citations"]["items"]
         for key in ("start", "end"):
@@ -226,10 +230,30 @@ class MockBackbone:
         self.config = config
 
     async def generate(self, question: QuestionView, context: dict, schema: dict) -> dict:
-        if "completeness" in schema.get("properties", {}):
+        if "obligations" in schema.get("properties", {}):
+            data = {
+                "obligations": [
+                    {
+                        "id": "requested-output",
+                        "kind": "output",
+                        "text": "Answer the original synthetic question.",
+                        "anchor": question.question,
+                        "image_indices": [],
+                    }
+                ],
+                "alternatives": [],
+            }
+        elif "completeness" in schema.get("properties", {}):
             from .mock_verification import synthetic_audit
 
             data = synthetic_audit(question, context)
+            if "dispositions" in schema["properties"]:
+                data["dispositions"] = []
+                for dep in data["dependencies"]:
+                    dep["logical_id"] = dep["id"]
+                    dep["obligations"] = [
+                        o["id"] for o in context["question_contract"]["obligations"]
+                    ]
         elif "selected" in schema.get("properties", {}):
             selected = next(iter(context["candidates"]), "none-supported")
             data = {
