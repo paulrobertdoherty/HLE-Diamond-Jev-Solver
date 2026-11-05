@@ -247,7 +247,12 @@ async def research(solver, q, plan, round_no, previous):
                         )
                     )
 
-    shortlist = retrieval_shortlist(passages, config.relevance.shortlist)
+    shortlist = retrieval_shortlist(
+        passages,
+        config.relevance.shortlist,
+        policy=config.remediation.shortlist,
+        structural_slots=config.remediation.structural_slots,
+    )
     boundaries = boundary_rows("fetched", passages, passages)
     boundaries += boundary_rows(
         "shortlisted", passages, shortlist, reasons={p.id: "shortlist_limit" for p in passages}

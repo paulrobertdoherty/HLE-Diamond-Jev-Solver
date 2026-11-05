@@ -3,6 +3,7 @@ import unittest
 from jev_solver.tools.structure import StructuredText
 from jev_solver.retrieval.structure import structured_passages, display_cost
 from jev_solver.models import digest
+from jev_solver.retrieval.evidence import chunk_page, retrieval_shortlist
 
 
 class StructuralViewsTests(unittest.TestCase):
@@ -51,3 +52,18 @@ class StructuralViewsTests(unittest.TestCase):
         self.assertEqual(
             structured_passages(saved, "mapping")[0].view["header_status"], "unavailable"
         )
+
+    def test_shortlist_reserves_four_slots_and_returns_unused_capacity(self):
+        text = (
+            "search term " * 10000
+            + "\n\n# Definition\n\nSymbol α means a positive integer.\n\n# Theorem\n\nFor every α, β ≤ α²."
+        )
+        page = self.page(text)
+        raw = chunk_page(page, "search term")
+        structures = structured_passages(page, "search term")
+        control = retrieval_shortlist(raw + structures, 12)
+        hybrid = retrieval_shortlist(raw + structures, 12, policy="remediation-v1")
+        self.assertEqual(len(hybrid), 12)
+        self.assertFalse(any(p.view for p in control))
+        self.assertEqual(sum(bool(p.view) for p in hybrid), 2)
+        self.assertEqual(hybrid, retrieval_shortlist(raw + structures, 12, policy="remediation-v1"))

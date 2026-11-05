@@ -69,8 +69,56 @@ def lexical_rank(passages: list[EvidencePassage]) -> list[EvidencePassage]:
     )
 
 
-def retrieval_shortlist(passages: list[EvidencePassage], limit: int = 20) -> list[EvidencePassage]:
+def merge_associations(passages, *, text_identity=False):
+    merged = {}
+    for p in passages:
+        key = digest(p.text) if text_identity else p.id
+        dependencies = tuple(
+            dict.fromkeys((*p.dependency_ids, *((p.dependency_id,) if p.dependency_id else ())))
+        )
+        provenance = p.source_provenance or (
+            {
+                "passage_id": p.id,
+                "url": p.url,
+                "source_hash": p.source_hash,
+                "start": p.start,
+                "end": p.end,
+            },
+        )
+        if key in merged:
+            old = merged[key]
+            merged[key] = replace(
+                old,
+                dependency_ids=tuple(dict.fromkeys((*old.dependency_ids, *dependencies))),
+                source_provenance=tuple(
+                    {digest(v): v for v in (*old.source_provenance, *provenance)}.values()
+                ),
+                view=old.view or p.view,
+            )
+        else:
+            merged[key] = replace(
+                p, dependency_ids=dependencies, source_provenance=tuple(provenance)
+            )
+    return list(merged.values())
+
+
+def retrieval_shortlist(
+    passages: list[EvidencePassage], limit: int = 20, *, policy="legacy-v1", structural_slots=4
+) -> list[EvidencePassage]:
     """Give each query and source a turn before admitting more chunks from a long page."""
+    if policy == "remediation-v1":
+        passages = merge_associations(passages)
+        structures = [
+            p for p in passages if p.view.get("kind") in {"definition", "theorem", "table_row"}
+        ]
+        reserved = retrieval_shortlist(structures, min(structural_slots, limit))
+        reserved_ids = {p.id for p in reserved}
+        lexical = retrieval_shortlist(
+            [p for p in passages if p.id not in reserved_ids], limit - len(reserved)
+        )
+        return lexical + reserved
+    if limit <= 0:
+        return []
     queries = {}
     for passage in lexical_rank(passages):
         sources = queries.setdefault(passage.subquestion, {})
