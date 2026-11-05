@@ -122,13 +122,16 @@ def diverse_packet(
     return packet
 
 
-def rank_leads(results: list[dict], missing_fact: str) -> list[dict]:
+def rank_leads(results: list[dict], missing_fact: str, *, preferred_urls=()) -> list[dict]:
     """Audited snippets prioritize fetches; they never become evidence passages."""
     return [
         row
         for _, row in sorted(
             enumerate(results),
             key=lambda pair: (
+                preferred_urls.index(pair[1]["url"])
+                if pair[1]["url"] in preferred_urls
+                else len(preferred_urls),
                 -lexical_score(
                     missing_fact, pair[1].get("title", "") + " " + pair[1].get("snippet", "")
                 ),

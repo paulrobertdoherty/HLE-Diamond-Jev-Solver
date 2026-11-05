@@ -53,6 +53,10 @@ Live tool runs can select `search_backend: perplexity` with `PERPLEXITY_API_KEY`
 
 The [search root-cause investigation](docs/JEV_SEARCH_ROOT_CAUSE.md) traces the remaining verification bypass, evidence loss and research/selection limits to code and saved runs. Its repository fixes are implemented in [evidence-v3](docs/EVIDENCE_V3.md), which includes exact TypeSafe account steps, changed budgets and the remaining labeling/evaluation work. No customer Jev training or classifier registration is needed.
 
+The [v3 attribution suite](docs/EVIDENCE_V3_TESTING.md) implements offline boundary regressions, private replay adapters, labeled-case extraction, evidence-survival/workflow metrics, fixed-query search replay and controlled comparison utilities. See [validation results and unrun quality measurements](docs/EVIDENCE_V3_TEST_RESULTS.md).
+
+The [initial Luna/Terra/Haiku labeling pilot](docs/EVIDENCE_V3_LABEL_PILOT.md) records paid review costs, output-grounding failures, provisional Terra diagnoses and Haiku disagreement notes. It preserves unresolved gold-label status and does not change solver acceptance.
+
 ## Checks
 
 ```bash

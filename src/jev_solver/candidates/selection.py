@@ -40,6 +40,31 @@ def vote(candidates: list[Candidate]) -> Candidate | None:
     return group[0]
 
 
+def selection_references(references, selected, names, passed):
+    """Resolve only exact bare IDs or the selected display name's qualified IDs.
+
+    Overlapping bare IDs in other candidates are harmless: the selected candidate
+    defines their scope. A foreign prefix must never inherit that scope.
+    """
+    resolved = []
+    for reference in references:
+        if any(
+            reference.startswith((f"{name}.", f"{name}:")) for name in names if name != selected
+        ):
+            raise ValueError(f"selection basis: foreign candidate reference: {reference}")
+        matches = {
+            dependency
+            for dependency in passed
+            if reference in {dependency, f"{selected}.{dependency}", f"{selected}:{dependency}"}
+        }
+        if len(matches) != 1:
+            raise ValueError(
+                f"selection basis: unknown, unpassed or ambiguous reference: {reference}"
+            )
+        resolved.append(matches.pop())
+    return resolved
+
+
 async def select(
     jev,
     gateway,
@@ -156,10 +181,44 @@ async def select(
         checks = (assessments or {}).get(names[name].id, {})
         required = {d["id"] for d in checks.get("dependencies", []) if d["critical"]}
         passed = {d["id"] for d in checks.get("dependencies", []) if d["status"] == "passed"}
-        cited = set(basis["checked_dependencies"])
-        if not checks.get("eligible") or not required <= cited or not cited <= passed:
-            raise ValueError("selection basis does not cover actual passed dependency checks")
+        try:
+            refs = selection_references(basis["checked_dependencies"], name, names, passed)
+            cited = set(refs)
+            if not checks.get("eligible"):
+                raise ValueError("selection basis: selected candidate is ineligible")
+            if not required <= cited:
+                raise ValueError(
+                    "selection basis: missing critical dependencies: "
+                    + ", ".join(sorted(required - cited))
+                )
+        except ValueError as error:
+            gateway.store.event(
+                question.id,
+                "selection_validation_failed",
+                {
+                    "selected": name,
+                    "reason": str(error),
+                    "required": sorted(required),
+                    "passed": sorted(passed),
+                    "references": basis["checked_dependencies"],
+                },
+            )
+            raise
+        basis = {
+            **basis,
+            "raw_checked_dependencies": basis["checked_dependencies"],
+            "checked_dependencies": refs,
+        }
     elif basis["checked_dependencies"]:
+        gateway.store.event(
+            question.id,
+            "selection_validation_failed",
+            {
+                "selected": name,
+                "reason": "abstention_references",
+                "references": basis["checked_dependencies"],
+            },
+        )
         raise ValueError("abstention cannot cite a selected candidate's checks")
     gateway.store.event(question.id, "selection_basis", basis)
     return names.get(name)

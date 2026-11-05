@@ -16,12 +16,62 @@ from ..tracing.store import Store, atomic_json
 
 
 async def components(config: Config, cases: Path, output: Path, judge: str = "jev") -> dict:
+    from ..judgments.pipeline import SUPPORT
+
+    if judge not in {"jev", "backbone", "lexical", "stored"}:
+        raise ValueError("unknown component judge")
     rows = read_jsonl(cases)
+    unresolved = 0
+    if rows and rows[0].get("version") == 1:
+        from .labels import component_rows, load_cases
+
+        labeled = load_cases(cases)
+        rows = component_rows(labeled)
+        unresolved = sum(
+            row["component"] in {"J2", "J3"} and row["label"]["status"] != "adjudicated"
+            for row in labeled
+        )
+        if not rows:
+            artifact = {
+                "judge": judge,
+                "metrics": {
+                    "J2": {"count": 0, "accuracy": None},
+                    "J3": {"count": 0, "accuracy": None},
+                },
+                "unresolved_cases": unresolved,
+                "cost_usd": 0,
+                "paid_calls_dispatched": 0,
+                "development_only": True,
+            }
+            atomic_json(output / "components.json", artifact)
+            return artifact
     if not rows or any(r.get("stage") not in {"J2", "J3"} for r in rows):
         raise ValueError("component evaluation requires labeled J2/J3 development cases")
-    if judge not in {"jev", "backbone", "lexical"}:
-        raise ValueError("unknown component judge")
+    if any(not isinstance(row.get("id"), str) or not row["id"] for row in rows) or len(
+        {r["id"] for r in rows}
+    ) != len(rows):
+        raise ValueError("component rows require unique nonempty IDs")
     for row in rows:
+        if not isinstance(row.get("state"), dict) or set(row["state"]) & {
+            "expected",
+            "label",
+            "reference",
+            "reference_answer",
+            "adjudication",
+        }:
+            raise ValueError("component provider state must exclude scoring labels and references")
+        if row["stage"] == "J2":
+            probability(row.get("expected"))
+        elif row.get("expected") not in SUPPORT["criteria"] or any(
+            not isinstance(row["state"].get(k), str) or not row["state"][k].strip()
+            for k in ("claim", "quote", "source_context")
+        ):
+            raise ValueError("invalid labeled source-entailment case")
+        if any(
+            key in row and type(row[key]) is not bool
+            for key in ("useful", "answer_bearing", "contradictory")
+        ):
+            raise ValueError("packet relevance labels must be booleans")
         if row["stage"] == "J2" and any(
             not isinstance(row.get("state", {}).get(k), str) or not row["state"][k].strip()
             for k in ("question", "missing_fact", "search_query", "passage")
@@ -44,7 +94,10 @@ async def components(config: Config, cases: Path, output: Path, judge: str = "je
 
             spec = RELEVANCE if row["stage"] == "J2" else SUPPORT
             confidence = None
-            if judge == "jev":
+            if judge == "stored":
+                observed = row.get("observed", {})
+                value, confidence = observed.get("value"), observed.get("confidence")
+            elif judge == "jev":
                 judged = await jev.request(row["id"], row["stage"], state, {"judgment": spec})
                 value = judged["judgment"].value if "judgment" in judged else None
                 confidence = judged["judgment"].confidence if "judgment" in judged else None
@@ -111,16 +164,20 @@ async def components(config: Config, cases: Path, output: Path, judge: str = "je
                     if isinstance(value, (float, int)) and isinstance(expected, (float, int))
                     else None,
                     "unavailable": value is None,
+                    "not_run": judge == "stored" and row.get("not_run", False),
                 }
             )
         from statistics import mean
 
         metrics = {}
         for stage in ("J2", "J3"):
-            selected = [r for r in result if r["stage"] == stage]
+            all_rows = [r for r in result if r["stage"] == stage]
+            selected = [r for r in all_rows if not r["not_run"]]
             numeric = [r["absolute_error"] for r in selected if r["absolute_error"] is not None]
             metrics[stage] = {
-                "count": len(selected),
+                "count": len(all_rows),
+                "judged_count": len(selected),
+                "not_run": len(all_rows) - len(selected),
                 "accuracy": mean(r["correct"] for r in selected) if selected else None,
                 "mean_absolute_error": mean(numeric) if numeric else None,
                 "unavailable": sum(r["unavailable"] for r in selected),
@@ -136,14 +193,54 @@ async def components(config: Config, cases: Path, output: Path, judge: str = "je
             for label in SUPPORT["criteria"]
         }
         for r in result:
-            if r["stage"] == "J3":
+            if r["stage"] == "J3" and not r["not_run"]:
                 confusion[r["row"]["expected"]][r["value"] or "unavailable"] += 1
         metrics["J3"]["confusion_matrix"] = confusion
+        positives = sum(
+            r["row"]["expected"] == "supported"
+            for r in result
+            if r["stage"] == "J3" and not r["not_run"]
+        )
+        negatives = metrics["J3"]["judged_count"] - positives
+        metrics["J3"].update(
+            {
+                "false_support_count": sum(
+                    confusion[label]["supported"]
+                    for label in SUPPORT["criteria"]
+                    if label != "supported"
+                ),
+                "false_support_rate": ratio(
+                    sum(
+                        confusion[label]["supported"]
+                        for label in SUPPORT["criteria"]
+                        if label != "supported"
+                    ),
+                    negatives,
+                ),
+                "false_rejection_count": sum(
+                    confusion["supported"][label]
+                    for label in SUPPORT["criteria"]
+                    if label != "supported"
+                ),
+                "false_rejection_rate": ratio(
+                    sum(
+                        confusion["supported"][label]
+                        for label in SUPPORT["criteria"]
+                        if label != "supported"
+                    ),
+                    positives,
+                ),
+                "supported_label_count": positives,
+                "non_supported_label_count": negatives,
+            }
+        )
         artifact = {
             "judge": judge,
             "metrics": metrics,
             "cost_usd": store.cost(),
             "development_only": True,
+            "unresolved_cases": unresolved,
+            "usage": store.usage_summary(),
         }
         atomic_json(output / "components.json", artifact)
         return artifact
@@ -163,16 +260,29 @@ def packet_metrics(config, results, judge="jev"):
 
     groups = {}
     for result in results:
-        groups.setdefault(result["row"].get("task_id", result["row"]["id"]), []).append(result)
+        row = result["row"]
+        state = row["state"]
+        group = (
+            row.get("task_id", row["id"]),
+            state.get("question"),
+            row.get("round"),
+            state.get("missing_fact"),
+        )
+        groups.setdefault(group, []).append(result)
     totals = {kind: 0 for kind in ("answer_bearing", "useful", "contradictory")}
     retained = dict.fromkeys(totals, 0)
+    checkpoints = {
+        stage: dict.fromkeys(totals, 0)
+        for stage in ("before_shortlist", "after_shortlist", "after_relevance", "after_packet")
+    }
+    exclusions = []
     for rows in groups.values():
         passages = []
         for r in rows:
             state, row = r["row"]["state"], r["row"]
             passages.append(
                 EvidencePassage(
-                    row["id"],
+                    row.get("passage_id", row["id"]),
                     state.get("url", f"https://fixture.invalid/{row['id']}"),
                     digest(state["passage"]),
                     state["passage"],
@@ -202,26 +312,66 @@ def packet_metrics(config, results, judge="jev"):
             alternative_slots=config.relevance.alternative_slots,
         )
         selected = {p.id for p in packet}
+        filtered_ids = {p.id for p in filtered}
         for r in rows:
             row = r["row"]
+            passage_id = row.get("passage_id", row["id"])
             labels = {
                 kind: row.get(
                     kind,
-                    row["expected"] >= config.relevance.min_score if kind == "useful" else False,
+                    row["expected"] >= config.relevance.min_score if kind == "useful" else None,
                 )
                 for kind in totals
             }
-            if any(type(v) is not bool for v in labels.values()):
+            if any(v is not None and type(v) is not bool for v in labels.values()):
                 raise ValueError("packet relevance labels must be booleans")
+            reason = (
+                "shortlist"
+                if passage_id not in ids
+                else "relevance_policy"
+                if passage_id not in filtered_ids
+                else "packet_limit"
+                if passage_id not in selected
+                else "retained"
+            )
+            exclusions.append(
+                {
+                    "id": row["id"],
+                    "passage_id": passage_id,
+                    "task_id": row.get("task_id", row["id"]),
+                    "reason": reason,
+                }
+            )
             for kind, label in labels.items():
+                if label is None:
+                    continue
                 totals[kind] += label
-                retained[kind] += label and row["id"] in selected
+                retained[kind] += label and passage_id in selected
+                for stage, survived in (
+                    ("before_shortlist", True),
+                    ("after_shortlist", passage_id in ids),
+                    ("after_relevance", passage_id in filtered_ids),
+                    ("after_packet", passage_id in selected),
+                ):
+                    checkpoints[stage][kind] += bool(label and survived)
     return {
         "packet_policy": "lexical_nonzero"
         if judge == "lexical"
         else "configured_relevance_with_lexical_outage_fallback",
         "packet_groups": len(groups),
         "labeled_totals": totals,
+        "survival_checkpoints": {
+            stage: {
+                kind: {
+                    "retained": count,
+                    "total": totals[kind],
+                    "recall": ratio(count, totals[kind]),
+                }
+                for kind, count in counts.items()
+            }
+            for stage, counts in checkpoints.items()
+        },
+        "exclusions": exclusions,
         "answer_bearing_recall_at_packet_budget": ratio(
             retained["answer_bearing"], totals["answer_bearing"]
         ),
@@ -241,6 +391,18 @@ def workflow_metrics(cases: Path, output: Path):
     rows = read_jsonl(cases)
     if not rows:
         raise ValueError("empty workflow labels")
+    if rows[0].get("version") == 1:
+        from .labels import load_cases, workflow_rows
+
+        labeled = load_cases(cases)
+        unresolved = sum(
+            row["component"] in {"audit", "reference"} and row["label"]["status"] != "adjudicated"
+            for row in labeled
+        )
+        rows = workflow_rows(labeled)
+    else:
+        unresolved = sum(row.get("label_status") == "unresolved" for row in rows)
+        rows = [row for row in rows if row.get("label_status") != "unresolved"]
     required = discovered = checked = selected = wrong = answerable = rejected = 0
     coverage_count = selection_count = 0
     for row in rows:
@@ -274,8 +436,10 @@ def workflow_metrics(cases: Path, output: Path):
             answerable += bool(gold)
             rejected += bool(gold) and choice is None
             selection_count += 1
-        else:
-            raise ValueError("workflow stage must be coverage or selection")
+        elif row.get("stage") not in {"audit", "visual", "eligibility", "reference"}:
+            raise ValueError("unknown workflow stage")
+    from .workflows import extra_workflow_metrics
+
     artifact = {
         "development_only": True,
         "paid_calls_dispatched": 0,
@@ -290,6 +454,8 @@ def workflow_metrics(cases: Path, output: Path):
         "wrong_selected_count": wrong,
         "answerable_count": answerable,
         "correct_pool_abstentions": rejected,
+        "unresolved_cases": unresolved,
+        **extra_workflow_metrics(rows),
     }
     atomic_json(output, artifact)
     return artifact

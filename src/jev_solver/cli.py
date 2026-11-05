@@ -64,9 +64,40 @@ def parser() -> argparse.ArgumentParser:
     s.add_argument("--config", type=Path, required=True)
     s.add_argument("--cases", type=Path, required=True)
     s.add_argument("--output", type=Path, required=True)
-    s.add_argument("--judge", choices=["jev", "backbone", "lexical"], default="jev")
+    s.add_argument("--judge", choices=["jev", "backbone", "lexical", "stored"], default="jev")
     s = sub.add_parser("workflow-eval")
     s.add_argument("--cases", type=Path, required=True)
+    s.add_argument("--output", type=Path, required=True)
+    s = sub.add_parser("attribution-extract")
+    s.add_argument("--audit", type=Path, required=True)
+    s.add_argument("--index", type=Path, required=True)
+    s.add_argument("--questions", type=Path, required=True)
+    s.add_argument("--output", type=Path, required=True)
+    s = sub.add_parser("audit-eval")
+    s.add_argument("--config", type=Path, required=True)
+    s.add_argument("--cases", type=Path, required=True)
+    s.add_argument("--output", type=Path, required=True)
+    s.add_argument("--repeats", type=int, default=1)
+    s = sub.add_parser("search-eval")
+    s.add_argument("--config", type=Path, required=True)
+    s.add_argument("--queries", type=Path, required=True)
+    s.add_argument("--output", type=Path, required=True)
+    source = s.add_mutually_exclusive_group(required=True)
+    source.add_argument("--snapshot", type=Path)
+    source.add_argument("--live", action="store_true")
+    s.add_argument("--fetch-budget", type=int, default=4)
+    s.add_argument("--result-limit", type=int, default=20)
+    s = sub.add_parser("replay-validate")
+    s.add_argument("--manifest", type=Path, required=True)
+    s = sub.add_parser("replay-report")
+    s.add_argument("--manifest", type=Path, required=True)
+    s.add_argument(
+        "--arm",
+        action="append",
+        required=True,
+        help="ARM_ID=private/grades.json; repeat for each declared arm",
+    )
+    s.add_argument("--workflow-cases", type=Path)
     s.add_argument("--output", type=Path, required=True)
     return p
 
@@ -190,6 +221,62 @@ def execute(args) -> dict:
         from .evaluation.components import workflow_metrics
 
         return workflow_metrics(args.cases, args.output)
+    if args.command == "attribution-extract":
+        from .evaluation.labels import extract_cases
+
+        return extract_cases(args.audit, args.index, args.output, args.questions)
+    if args.command == "audit-eval":
+        from .evaluation.audits import audit_evaluation
+
+        return asyncio.run(
+            audit_evaluation(Config.load(args.config), args.cases, args.output, args.repeats)
+        )
+    if args.command == "search-eval":
+        from .evaluation.search import search_comparison
+
+        return asyncio.run(
+            search_comparison(
+                Config.load(args.config),
+                args.queries,
+                args.output,
+                snapshot=args.snapshot,
+                live=args.live,
+                result_limit=args.result_limit,
+                fetch_budget=args.fetch_budget,
+            )
+        )
+    if args.command == "replay-validate":
+        from .evaluation.replay import validate_manifest
+        from .models import digest
+
+        manifest = validate_manifest(json.loads(args.manifest.read_text()))
+        return {"valid": True, "manifest_hash": digest(manifest), "paid_calls_dispatched": 0}
+    if args.command == "replay-report":
+        from .evaluation.replay import controlled_comparison
+        from .tracing.store import atomic_json
+
+        grades = {}
+        for value in args.arm:
+            arm, separator, path = value.partition("=")
+            if not separator or not arm or arm in grades:
+                raise ValueError("provide each declared arm once as ARM_ID=grades.json")
+            grades[arm] = json.loads(Path(path).read_text())["grades"]
+        workflow = []
+        if args.workflow_cases:
+            from .benchmarks.data import read_jsonl
+            from .evaluation.labels import load_cases, workflow_rows
+
+            workflow = read_jsonl(args.workflow_cases)
+            workflow = (
+                workflow_rows(load_cases(args.workflow_cases))
+                if workflow and workflow[0].get("version") == 1
+                else [r for r in workflow if r.get("label_status") != "unresolved"]
+            )
+        result = controlled_comparison(
+            json.loads(args.manifest.read_text()), grades, workflow_rows=workflow
+        )
+        atomic_json(args.output, result)
+        return result
     raise ValueError("unknown operation")
 
 

@@ -56,6 +56,7 @@ AUDIT_SCHEMA = object_schema(
                     "dependency_id": {"type": "string"},
                     "missing_fact": {"type": "string"},
                     "query": {"type": "string"},
+                    "fetch_urls": {"type": "array", "items": {"type": "string"}},
                 }
             ),
         },
@@ -89,6 +90,8 @@ Generate up to three short, neutral, specific factual queries tied to inventory 
 missing_fact separate from the literal query. Investigate evidence that could disconfirm the draft.
 Use research_outcomes (unused leads, failures, empty packets) for a bounded follow-up. Avoid repeating
 an already attempted query. A search/fetch failure is unavailable information, never a refutation.
+Use fetch_urls to request specific allowed unused leads from research_outcomes. Use an empty list
+otherwise. These actions consume the same fetch budget and cannot fetch an unknown or blocked URL.
 Return only the audit schema, with concise reasons and bases, not a new answer."""
 
 
@@ -143,10 +146,22 @@ def parse_audit(value):
     for query in value["queries"]:
         if (
             not isinstance(query, dict)
-            or set(query) != {"dependency_id", "missing_fact", "query"}
-            or any(not isinstance(v, str) or not v.strip() for v in query.values())
+            or set(query)
+            not in (
+                {"dependency_id", "missing_fact", "query"},
+                {"dependency_id", "missing_fact", "query", "fetch_urls"},
+            )
+            or any(
+                not isinstance(query[k], str) or not query[k].strip()
+                for k in ("dependency_id", "missing_fact", "query")
+            )
             or query["dependency_id"] not in ids
             or len(query["query"]) > 300
+            or not isinstance(query.get("fetch_urls", []), list)
+            or len(query.get("fetch_urls", [])) > 4
+            or any(
+                not isinstance(url, str) or not url.strip() for url in query.get("fetch_urls", [])
+            )
         ):
             raise ValueError("invalid verification query")
     return value
@@ -196,6 +211,9 @@ async def audit_dependencies(
             by_id[declared.id] = row
             result["completeness"] = check("failed", "The audit omitted a declared dependency.")
     covered_claims = {d["statement"] for d in dependencies}
+    # A retained declared ID establishes identity across wording changes. Do not
+    # use text similarity to merge an omitted, genuinely distinct premise.
+    covered_claims.update(d.statement for d in candidate.dependencies if d.id in by_id)
     for claim in candidate.source_claims:
         if claim not in covered_claims:
             dependencies.append(
@@ -213,7 +231,14 @@ async def audit_dependencies(
 
     gaps = result["gap_assessments"]
     if sorted(g["gap_index"] for g in gaps) != list(range(len(candidate.gaps))):
-        result["completeness"] = check("failed", "Not every draft gap has a criticality decision.")
+        indices = [g["gap_index"] for g in gaps]
+        missing = sorted(set(range(len(candidate.gaps))) - set(indices))
+        extra = sorted(set(indices) - set(range(len(candidate.gaps))))
+        duplicates = sorted({i for i in indices if indices.count(i) > 1})
+        result["completeness"] = check(
+            "failed",
+            f"Invalid gap mapping: missing={missing}, extra={extra}, duplicates={duplicates}.",
+        )
     for gap in gaps:
         if gap["critical"] and not any(by_id[i]["critical"] for i in gap["dependency_ids"]):
             result["completeness"] = check("failed", "Critical gap lacks a critical dependency.")

@@ -30,7 +30,15 @@ async def research(solver, q, plan, round_no, previous):
     rounds_left = max(1, config.limits.rounds - round_no)
     search_quota = max(1, math.ceil(searches_left / rounds_left)) if searches_left else 0
     attempted = {x["query"] for o in previous for x in o["searches"]}
-    queries = [query for query in plan if query["query"] not in attempted][:search_quota]
+    known_leads = {lead["url"] for outcome in previous for lead in outcome["leads"]}
+    direct = [
+        query for query in plan if any(url in known_leads for url in query.get("fetch_urls", []))
+    ]
+    queries = [query for query in plan if query["query"] not in attempted and query not in direct][
+        :search_quota
+    ]
+    fetch_only = [query for query in plan if query not in queries and query.get("fetch_urls")][:3]
+    tasks = fetch_only + queries
     reserve = (
         min(config.followup_fetch_reserve, max(0, fetches_left - 1))
         if (rounds_left > 1 and searches_left > len(queries))
@@ -38,9 +46,9 @@ async def research(solver, q, plan, round_no, previous):
     )
     fetch_slots = fetches_left - reserve
     identity = {
-        "research_version": 3,
+        "research_version": 4,
         "question": record(q),
-        "queries": queries,
+        "queries": tasks,
         "round": round_no,
         "previous": previous,
         "config_hash": config.hash,
@@ -90,7 +98,8 @@ async def research(solver, q, plan, round_no, previous):
     corpus_ids = set()
     attempts = 0
     budget_limited = False
-    for query_no, query in enumerate(queries):
+    previously_fetched = {f["url"] for outcome in previous for f in outcome["fetches"]}
+    for query_no, query in enumerate(tasks):
         if solver.corpus:
             corpus_passages = [
                 replace(
@@ -107,7 +116,11 @@ async def research(solver, q, plan, round_no, previous):
             passages.extend(corpus_passages)
             corpus_ids.update(p.id for p in corpus_passages)
         try:
-            results = await solver.web.search(q.id, query["query"], q.question)
+            results = (
+                await solver.web.search(q.id, query["query"], q.question)
+                if query in queries
+                else []
+            )
         except CallLimitExceeded as e:
             searches.append({**query, "status": "limit", "kind": e.kind})
             continue
@@ -119,24 +132,59 @@ async def research(solver, q, plan, round_no, previous):
             searches.append({**query, "status": "budget_limited"})
             budget_limited = True
             break
-        searches.append(
-            {**query, "status": "results" if results else "empty", "result_count": len(results)}
-        )
-        quota = math.ceil(fetch_slots / max(1, len(queries) - query_no))
+        if query in queries:
+            searches.append(
+                {**query, "status": "results" if results else "empty", "result_count": len(results)}
+            )
+        requested = query.get("fetch_urls", [])
+        saved = [
+            lead for outcome in previous for lead in outcome["leads"] if lead["url"] in requested
+        ]
+        results = results + [
+            lead for lead in saved if lead["url"] not in {r["url"] for r in results}
+        ]
+        provider_ranks = {
+            row["url"]: row.get("provider_rank", i + 1)
+            for i, row in reversed(list(enumerate(results)))
+        }
+        local_ranks = {
+            row["url"]: i + 1
+            for i, row in reversed(list(enumerate(rank_leads(results, query["missing_fact"]))))
+        }
+        for url in requested:
+            if url not in provider_ranks:
+                solver.store.event(
+                    q.id, "fetch_action_rejected", {"url": url, "reason": "unknown_lead"}
+                )
+        quota = math.ceil(fetch_slots / max(1, len(tasks) - query_no))
         query_attempts, seen = 0, set()
-        for result in rank_leads(results, query["missing_fact"]):
+        for fetch_rank, result in enumerate(
+            rank_leads(results, query["missing_fact"], preferred_urls=requested), 1
+        ):
             url = result["url"]
             if url in seen:
                 continue
             seen.add(url)
+            try:
+                solver.policy.result(result)
+            except Blocked as e:
+                solver.store.event(q.id, "fetch_action_rejected", {"url": url, "reason": e.rule})
+                continue
             lead = {
                 "url": url,
                 "title": result.get("title", "")[:300],
                 "snippet": result.get("snippet", "")[:1000],
                 "dependency_id": query["dependency_id"],
                 "status": "not_fetched",
+                "requested": url in requested,
+                "provider_rank": provider_ranks[url],
+                "local_rank": local_ranks[url],
+                "fetch_rank": fetch_rank,
             }
             leads.append(lead)
+            if url in previously_fetched:
+                lead["status"] = "already_attempted"
+                continue
             if url not in pages and query_attempts >= quota:
                 continue
             try:
@@ -145,8 +193,17 @@ async def research(solver, q, plan, round_no, previous):
                     query_attempts += 1
                     fetch_slots -= 1
                     pages[url] = await solver.web.fetch(q.id, url)
+                    page = pages[url]
                     fetches.append(
-                        {"url": url, "status": "fetched" if pages[url] else "blocked_or_empty"}
+                        {
+                            "url": url,
+                            "requested": url in requested,
+                            "status": "fetched" if page else "blocked_or_empty",
+                            "destination": page["url"] if page else None,
+                            "redirects": page.get("redirects", []) if page else [],
+                            "extracted_chars": len(page["text"]) if page else 0,
+                            "source_hash": page["source_hash"] if page else None,
+                        }
                     )
                 page = pages[url]
             except CallLimitExceeded as e:
@@ -213,6 +270,9 @@ async def research(solver, q, plan, round_no, previous):
         "passage_count": len(passages),
         "shortlisted_ids": [p.id for p in shortlist],
         "packet_ids": [p.id for p in packet],
+        "retained_sources": [
+            {"passage_id": p.id, "url": p.url, "source_hash": p.source_hash} for p in packet
+        ],
         "excluded_ids": [p.id for p in shortlist if p.id not in {p.id for p in packet}],
     }
     solver.store.event(q.id, "research_outcome", outcome)

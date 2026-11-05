@@ -348,17 +348,22 @@ class Gateway:
             self.store.event(question.id, "model_replay", {"request_hash": key, "model": p.model})
             return cached
         # UTF-8 bytes bound text tokens conservatively; reserve full declared context for images.
-        if (
-            len(
-                canonical(
-                    {"q": question.question, "context": context, "schema": schema, "system": SYSTEM}
-                ).encode()
+        size = input_envelope(question, context, schema, p)
+        if size > p.max_input_tokens:
+            self.store.event(
+                question.id,
+                "model_input_rejected",
+                {
+                    "phase": phase,
+                    "request_hash": key,
+                    "reason": "conservative_envelope",
+                    "bound": size,
+                    "limit": p.max_input_tokens,
+                },
             )
-            + 1024
-            + len(question.images) * p.image_token_reserve
-            > p.max_input_tokens
-        ):
-            raise ValueError("request exceeds conservative input token envelope")
+            raise ValueError(
+                f"request exceeds conservative input token envelope: {size} > {p.max_input_tokens}"
+            )
         client_key = digest(asdict(p))
         if client_key not in self.clients:
             self.clients[client_key] = make_backbone(p)
@@ -371,11 +376,51 @@ class Gateway:
         )
         self.store.event(question.id, "model_response", {"request_hash": key, **response})
         if response["model"] != p.model or response.get("status") != "completed":
+            self.store.event(
+                question.id,
+                "model_output_rejected",
+                {
+                    "phase": phase,
+                    "request_hash": key,
+                    "reason": "model_changed"
+                    if response["model"] != p.model
+                    else "incomplete_generation",
+                    "finish_reason": response.get("finish_reason"),
+                },
+            )
             raise ProviderError("model changed or returned an incomplete/refused response")
-        parsed = json.loads(response["text"])
+        try:
+            parsed = json.loads(response["text"])
+        except json.JSONDecodeError:
+            self.store.event(
+                question.id,
+                "model_output_rejected",
+                {"phase": phase, "request_hash": key, "reason": "invalid_json"},
+            )
+            raise
+        if not isinstance(parsed, dict):
+            self.store.event(
+                question.id,
+                "model_output_rejected",
+                {"phase": phase, "request_hash": key, "reason": "non_object_output"},
+            )
+            raise ValueError("structured model output must be an object")
         self.store.cache(question.id, key, parsed)
         return parsed
 
     async def close(self):
         for client in self.clients.values():
             await client.close()
+
+
+def input_envelope(question, context, schema, provider):
+    """Conservative harness bound, not measured provider token usage."""
+    return (
+        len(
+            canonical(
+                {"q": question.question, "context": context, "schema": schema, "system": SYSTEM}
+            ).encode()
+        )
+        + 1024
+        + len(question.images) * provider.image_token_reserve
+    )

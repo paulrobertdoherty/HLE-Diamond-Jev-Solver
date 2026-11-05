@@ -95,7 +95,12 @@ def synthetic_audit(question, context):
             for i, _ in enumerate(draft["gaps"])
         ],
         "queries": [
-            {"dependency_id": dependency["id"], "missing_fact": query, "query": query}
+            {
+                "dependency_id": dependency["id"],
+                "missing_fact": query,
+                "query": query,
+                "fetch_urls": [],
+            }
             for query in queries
             if query not in attempted
         ][:3],

@@ -1,0 +1,131 @@
+{
+  "acceptance": {
+    "criteria": "Report paired full-set accuracy including errors.",
+    "replications": 2
+  },
+  "arms": [
+    {
+      "changed_components": [],
+      "components": {
+        "J2": {
+          "implementation": "v1",
+          "model": "frozen-model",
+          "prompt": "v1"
+        },
+        "J3": {
+          "implementation": "v1",
+          "model": "frozen-model",
+          "prompt": "v1"
+        },
+        "audit": {
+          "implementation": "v1",
+          "model": "frozen-model",
+          "prompt": "v1"
+        },
+        "fetch": {
+          "implementation": "v1",
+          "model": "none",
+          "prompt": "v1"
+        },
+        "initial": {
+          "implementation": "v1",
+          "model": "frozen-model",
+          "prompt": "v1"
+        },
+        "query": {
+          "implementation": "v1",
+          "model": "frozen-model",
+          "prompt": "v1"
+        },
+        "revision": {
+          "implementation": "v1",
+          "model": "frozen-model",
+          "prompt": "v1"
+        },
+        "search": {
+          "implementation": "v1",
+          "model": "none",
+          "prompt": "v1"
+        },
+        "selection": {
+          "implementation": "v1",
+          "model": "frozen-model",
+          "prompt": "v1"
+        }
+      },
+      "config_hash": "b2-config",
+      "id": "B2",
+      "implementation_hash": "source-v1"
+    },
+    {
+      "changed_components": [
+        "J2",
+        "J3"
+      ],
+      "components": {
+        "J2": {
+          "implementation": "v1",
+          "model": "jev-frozen",
+          "prompt": "v1"
+        },
+        "J3": {
+          "implementation": "v1",
+          "model": "jev-frozen",
+          "prompt": "v1"
+        },
+        "audit": {
+          "implementation": "v1",
+          "model": "frozen-model",
+          "prompt": "v1"
+        },
+        "fetch": {
+          "implementation": "v1",
+          "model": "none",
+          "prompt": "v1"
+        },
+        "initial": {
+          "implementation": "v1",
+          "model": "frozen-model",
+          "prompt": "v1"
+        },
+        "query": {
+          "implementation": "v1",
+          "model": "frozen-model",
+          "prompt": "v1"
+        },
+        "revision": {
+          "implementation": "v1",
+          "model": "frozen-model",
+          "prompt": "v1"
+        },
+        "search": {
+          "implementation": "v1",
+          "model": "none",
+          "prompt": "v1"
+        },
+        "selection": {
+          "implementation": "v1",
+          "model": "frozen-model",
+          "prompt": "v1"
+        }
+      },
+      "config_hash": "j23-config",
+      "id": "J23",
+      "implementation_hash": "source-v1"
+    }
+  ],
+  "evidence_policy": {
+    "packet": 6
+  },
+  "experiment_id": "synthetic-controlled-replay-example",
+  "policy_frozen": true,
+  "shared": {
+    "initial_candidates_hash": "frozen-initial_candidates_hash",
+    "pages_hash": "frozen-pages_hash",
+    "queries_hash": "frozen-queries_hash",
+    "questions_hash": "frozen-questions_hash",
+    "results_hash": "frozen-results_hash"
+  },
+  "split": "development",
+  "version": 1
+}

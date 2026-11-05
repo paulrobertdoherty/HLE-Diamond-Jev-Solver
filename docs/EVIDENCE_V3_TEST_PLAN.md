@@ -2,6 +2,10 @@
 
 Session handoff prepared 2026-11-01. Repository: `HLE-Diamond-Jev-Solver`.
 
+Implementation update, 2026-11-02: see [suite usage and schemas](EVIDENCE_V3_TESTING.md), [validation results](EVIDENCE_V3_TEST_RESULTS.md), and the subsequent [Luna/Terra/Haiku labeling pilot](EVIDENCE_V3_LABEL_PILOT.md). The historical observations and proposed quality evaluations below remain the original handoff; expert semantic labels, matched search comparisons and controlled end-to-end experiments are still outstanding. The pilot supplies provisional AI diagnoses only.
+
+Next-session update, 2026-11-05: follow the [Terra/Haiku verification handoff](EVIDENCE_V3_LABEL_PILOT.md#next-session-instructions) for the proposed expanded review and subsequent controlled comparison. Its current-status guidance supersedes the original implementation sequence below; use this document for test specifications and the linked completion report to identify work already done.
+
 Implement tests that distinguish failures in Jev's judgments, Brave/Perplexity retrieval, the repository's evidence-handling code, Sol's reasoning and verification, and reference grading. Begin with offline contract regressions and frozen evidence. Add live component evaluations where new judgments are necessary, then use controlled end-to-end comparisons to measure their effect.
 
 This document contains the proposed suite and implementation handoff. The offline diagnostic scripts already exist; the additional tests and harness extensions below remain to be implemented. Creating this document has not changed solver behavior or launched a paid evaluation. The supporting [v3 attribution analysis](EVIDENCE_V3_SEARCH_ATTRIBUTION.md) contains the detailed findings; the specifications here can be used without the prior conversation.
