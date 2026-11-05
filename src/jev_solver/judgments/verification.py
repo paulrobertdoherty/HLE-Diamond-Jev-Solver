@@ -333,6 +333,28 @@ async def audit_dependencies(
             if not refs:
                 dep.update(check("not_run", "No fetched source establishes this factual premise."))
             elif semantic:
+                if gateway.config.remediation.support == "remediation-v1":
+                    from .support import support_claim
+
+                    supported = await support_claim(
+                        gateway,
+                        jev,
+                        q,
+                        candidate,
+                        dep["statement"],
+                        evidence,
+                        version=dep["premise_version"],
+                    )
+                    dep["support_check"] = supported
+                    dep["method"] = "atomic-source-support-v1"
+                    if supported["status"] != "passed":
+                        dep.update(
+                            check(
+                                supported["status"],
+                                f"Atomic source support: {supported['support']}.",
+                            )
+                        )
+                    continue
                 text = "\n\n".join(sources[i].text for i in refs)
                 judged = await jev.request(
                     q.id,

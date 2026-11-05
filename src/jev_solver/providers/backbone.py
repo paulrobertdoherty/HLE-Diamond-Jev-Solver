@@ -230,7 +230,23 @@ class MockBackbone:
         self.config = config
 
     async def generate(self, question: QuestionView, context: dict, schema: dict) -> dict:
-        if "obligations" in schema.get("properties", {}):
+        if "requirements" in schema.get("properties", {}):
+            claim = context["claim"]
+            data = {
+                "coverage": True,
+                "requirements": [
+                    {
+                        "id": "requirement",
+                        "statement": claim,
+                        "kind": "relation",
+                        "start": 0,
+                        "end": len(claim),
+                        "necessary": True,
+                        "depends_on": [],
+                    }
+                ],
+            }
+        elif "obligations" in schema.get("properties", {}):
             data = {
                 "obligations": [
                     {
@@ -536,6 +552,14 @@ class Gateway:
                     from ..judgments.verification import parse_audit
 
                     parse_audit(parsed)
+                elif "requirements" in schema.get("properties", {}):
+                    from ..judgments.support import parse_requirements
+
+                    parse_requirements(parsed, full_context["claim"], full_context["claim_version"])
+                elif "obligations" in schema.get("properties", {}):
+                    from ..judgments.graph import parse_contract
+
+                    parse_contract(parsed, question)
             except (ValueError, TypeError, KeyError) as error:
                 self.store.event(
                     question.id,

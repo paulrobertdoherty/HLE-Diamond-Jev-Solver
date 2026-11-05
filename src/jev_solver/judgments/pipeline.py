@@ -179,7 +179,14 @@ def exact_citation(candidate: Candidate, evidence: list[EvidencePassage]) -> lis
 
 
 async def verify(
-    jev: Jev, item: str, candidate: Candidate, evidence: list[EvidencePassage], semantic: bool
+    jev: Jev,
+    item: str,
+    candidate: Candidate,
+    evidence: list[EvidencePassage],
+    semantic: bool,
+    *,
+    gateway=None,
+    question=None,
 ) -> list[dict]:
     checks = exact_citation(candidate, evidence)
     passages = {p.id: p for p in evidence}
@@ -191,6 +198,27 @@ async def verify(
             check["support"] = "not_applicable"
             continue
         citation = check["citation"]
+        if gateway and gateway.config.remediation.support == "remediation-v1":
+            from .support import support_claim
+
+            result = await support_claim(
+                gateway,
+                jev,
+                question,
+                candidate,
+                citation["claim"],
+                evidence,
+                version=next(
+                    (
+                        d.premise_version
+                        for d in candidate.dependencies
+                        if d.statement == citation["claim"]
+                    ),
+                    1,
+                ),
+            )
+            check.update(result)
+            continue
         result = await jev.request(
             item,
             "J3",

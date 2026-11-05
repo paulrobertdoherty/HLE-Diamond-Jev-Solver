@@ -65,3 +65,40 @@ def relevance_validation(calibration, validation, thresholds):
         "promotion_gate": promotable,
         "policy_changed": False,
     }
+
+
+def support_validation(rows):
+    adjudicated = [r for r in rows if r.get("label_status") == "adjudicated"]
+    if not adjudicated:
+        return {"status": "unavailable", "unresolved": len(rows), "promotion_gate": None}
+    metrics = {}
+    for variant in ("control", "variant"):
+        false_support, false_rejection, supported, unsupported = 0, 0, 0, 0
+        for row in adjudicated:
+            if any(
+                row.get(k) not in {"supported", "contradicted", "insufficient", "unavailable"}
+                for k in ("expected", "control", "variant")
+            ):
+                raise ValueError("invalid adjudicated support comparison")
+            supported += row["expected"] == "supported"
+            unsupported += row["expected"] != "supported"
+            false_support += row[variant] == "supported" and row["expected"] != "supported"
+            false_rejection += row[variant] != "supported" and row["expected"] == "supported"
+        metrics[variant] = {
+            "false_support": false_support,
+            "false_rejection": false_rejection,
+            "supported": supported,
+            "unsupported": unsupported,
+        }
+    return {
+        "status": "measured",
+        "metrics": metrics,
+        "unresolved": len(rows) - len(adjudicated),
+        "promotion_gate": bool(
+            metrics["control"]["supported"]
+            and metrics["control"]["unsupported"]
+            and metrics["variant"]["false_support"] < metrics["control"]["false_support"]
+            and metrics["variant"]["false_rejection"] <= metrics["control"]["false_rejection"]
+        ),
+        "policy_changed": False,
+    }

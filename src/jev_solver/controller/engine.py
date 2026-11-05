@@ -221,7 +221,9 @@ class Solver:
         self.store.event(
             q.id, "evidence_boundaries", boundary_rows("audit_context", evidence, evidence)
         )
-        checks = await verify(self.jev, q.id, candidate, evidence, semantic)
+        checks = await verify(
+            self.jev, q.id, candidate, evidence, semantic, gateway=self.gateway, question=q
+        )
         self.store.event(q.id, "citation_checks", checks)
         audit = await audit_dependencies(
             self.gateway,
