@@ -121,7 +121,12 @@ async def select(
     gateway.store.event(
         question.id,
         "evidence_boundaries",
-        boundary_rows("selection_context", list(sources.values()), evidence),
+        boundary_rows(
+            "selection_context",
+            list(sources.values()),
+            evidence,
+            policy=getattr(remediation, "context", "legacy-v1"),
+        ),
     )
     state = {
         "task": SELECTION_TASK,

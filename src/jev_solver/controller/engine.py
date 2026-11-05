@@ -235,7 +235,11 @@ class Solver:
             return cached
         semantic = self.config.arm in {"J3", "J23", "Jfull", "M"}
         self.store.event(
-            q.id, "evidence_boundaries", boundary_rows("audit_context", evidence, evidence)
+            q.id,
+            "evidence_boundaries",
+            boundary_rows(
+                "audit_context", evidence, evidence, policy=self.config.remediation.context
+            ),
         )
         checks = await verify(
             self.jev, q.id, candidate, evidence, semantic, gateway=self.gateway, question=q
@@ -414,6 +418,7 @@ class Solver:
                                     "merged_revision_context",
                                     list(evidence_ledger.values()),
                                     evidence,
+                                    policy=self.config.remediation.packet,
                                 ),
                             )
                         if pending_code:

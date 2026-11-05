@@ -15,11 +15,17 @@ def boundary_metrics(rows):
             "selected_occurrences": sum(v["selected"] for v in values),
             "questions": len({v.get("question_id") for v in values}),
             "unique_texts": len({v["text_hash"] for v in values}),
+            "duplicate_text_occurrences": len(values) - len({v["text_hash"] for v in values}),
             "lost_unique_texts": len(
                 {v["text_hash"] for v in values} - {v["text_hash"] for v in values if v["selected"]}
             ),
             "dependency_coverage": sorted(
-                {d for v in values if v["selected"] for d in v["dependency_ids"]}
+                {
+                    d
+                    for v in values
+                    if v["selected"]
+                    for d in v.get("selected_dependency_ids", v["dependency_ids"])
+                }
             ),
             "first_exclusions": dict(
                 __import__("collections").Counter(v["reason"] for v in values if not v["selected"])

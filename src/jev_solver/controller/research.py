@@ -266,9 +266,18 @@ async def research(solver, q, plan, round_no, previous):
         policy=config.remediation.shortlist,
         structural_slots=config.remediation.structural_slots,
     )
-    boundaries = boundary_rows("fetched", passages, passages)
+    boundaries = boundary_rows(
+        "fetched",
+        passages,
+        passages,
+        policy=f"{config.parser_version}/{config.remediation.structure}",
+    )
     boundaries += boundary_rows(
-        "shortlisted", passages, shortlist, reasons={p.id: "shortlist_limit" for p in passages}
+        "shortlisted",
+        passages,
+        shortlist,
+        reasons={p.id: "shortlist_limit" for p in passages},
+        policy=config.remediation.shortlist,
     )
     observations = []
     if config.arm in {"J2", "J23", "Jfull", "M"} or config.retrieval == "hybrid-jev":
@@ -319,6 +328,7 @@ async def research(solver, q, plan, round_no, previous):
         "J2_admission",
         shortlist,
         ranked,
+        policy=config.remediation.relevance,
         reasons={
             p.id: "semantic_rejection"
             if any(o.id == p.id and o.relevance_status == "executed" for o in observations)
@@ -340,6 +350,7 @@ async def research(solver, q, plan, round_no, previous):
         "research_packet",
         ranked,
         packet,
+        policy=config.remediation.packet,
         reasons={r["passage_id"]: r["reason"] for r in packet_trace},
         budgets={"passages": config.relevance.packet, "characters": config.evidence_chars},
     )
