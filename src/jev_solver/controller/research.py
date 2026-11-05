@@ -9,6 +9,7 @@ from ..judgments.pipeline import rerank
 from ..models import EvidencePassage, digest, record
 from ..providers.backbone import ProviderError
 from ..tools.policy import Blocked
+from ..retrieval.outcomes import boundary_rows
 from ..retrieval.evidence import (
     chunk_page,
     diverse_packet,
@@ -235,6 +236,10 @@ async def research(solver, q, plan, round_no, previous):
                 )
 
     shortlist = retrieval_shortlist(passages, config.relevance.shortlist)
+    boundaries = boundary_rows("fetched", passages, passages)
+    boundaries += boundary_rows(
+        "shortlisted", passages, shortlist, reasons={p.id: "shortlist_limit" for p in passages}
+    )
     if config.arm in {"J2", "J23", "Jfull", "M"} or config.retrieval == "hybrid-jev":
         try:
             ranked = await rerank(solver.jev, q.id, shortlist, config.relevance)
@@ -252,12 +257,25 @@ async def research(solver, q, plan, round_no, previous):
             for p in lexical_rank(shortlist)
             if p.score > 0
         ]
+    boundaries += boundary_rows(
+        "J2_admission", shortlist, ranked, reasons={p.id: "semantic_rejection" for p in shortlist}
+    )
+    packet_trace = []
     packet = diverse_packet(
         ranked,
         config.evidence_chars,
         config.relevance.packet,
         alternative_slots=config.relevance.alternative_slots,
+        trace=packet_trace,
     )
+    boundaries += boundary_rows(
+        "research_packet",
+        ranked,
+        packet,
+        reasons={r["passage_id"]: r["reason"] for r in packet_trace},
+        budgets={"passages": config.relevance.packet, "characters": config.evidence_chars},
+    )
+    solver.store.event(q.id, "evidence_boundaries", boundaries)
     outcome = {
         "round": round_no,
         "status": "budget_limited" if budget_limited else "evidence" if packet else "no_evidence",
@@ -274,6 +292,7 @@ async def research(solver, q, plan, round_no, previous):
             {"passage_id": p.id, "url": p.url, "source_hash": p.source_hash} for p in packet
         ],
         "excluded_ids": [p.id for p in shortlist if p.id not in {p.id for p in packet}],
+        "boundaries": boundaries,
     }
     solver.store.event(q.id, "research_outcome", outcome)
     solver.store.event(

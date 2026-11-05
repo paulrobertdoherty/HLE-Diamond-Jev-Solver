@@ -28,7 +28,7 @@ from ..providers.backbone import Gateway
 from ..providers.jev import Jev
 from ..retrieval.corpus import Corpus
 from ..retrieval.evidence import diverse_packet
-from ..retrieval.outcomes import planner_outcomes
+from ..retrieval.outcomes import boundary_rows, planner_outcomes
 from ..judgments.verification import audit_dependencies
 from ..tools.policy import Policy
 from ..tools.sandbox import Sandbox
@@ -142,6 +142,9 @@ class Solver:
             )
             return cached
         semantic = self.config.arm in {"J3", "J23", "Jfull", "M"}
+        self.store.event(
+            q.id, "evidence_boundaries", boundary_rows("audit_context", evidence, evidence)
+        )
         checks = await verify(self.jev, q.id, candidate, evidence, semantic)
         self.store.event(q.id, "citation_checks", checks)
         audit = await audit_dependencies(
@@ -267,6 +270,15 @@ class Solver:
                                 self.config.evidence_chars,
                                 self.config.relevance.packet,
                                 alternative_slots=self.config.relevance.alternative_slots,
+                            )
+                            self.store.event(
+                                q.id,
+                                "evidence_boundaries",
+                                boundary_rows(
+                                    "merged_revision_context",
+                                    list(evidence_ledger.values()),
+                                    evidence,
+                                ),
                             )
                         if pending_code:
                             self.transition(q.id, Phase.CODE)

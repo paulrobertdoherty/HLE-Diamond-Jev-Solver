@@ -4,6 +4,31 @@ from collections import defaultdict
 from itertools import combinations
 
 
+def boundary_metrics(rows):
+    """Occurrence counts, unique information and question denominators stay separate."""
+    grouped = defaultdict(list)
+    for row in rows:
+        grouped[row["boundary"]].append(row)
+    return {
+        name: {
+            "occurrences": len(values),
+            "selected_occurrences": sum(v["selected"] for v in values),
+            "questions": len({v.get("question_id") for v in values}),
+            "unique_texts": len({v["text_hash"] for v in values}),
+            "lost_unique_texts": len(
+                {v["text_hash"] for v in values} - {v["text_hash"] for v in values if v["selected"]}
+            ),
+            "dependency_coverage": sorted(
+                {d for v in values if v["selected"] for d in v["dependency_ids"]}
+            ),
+            "first_exclusions": dict(
+                __import__("collections").Counter(v["reason"] for v in values if not v["selected"])
+            ),
+        }
+        for name, values in grouped.items()
+    }
+
+
 def fraction(numerator, denominator):
     return {
         "numerator": numerator,

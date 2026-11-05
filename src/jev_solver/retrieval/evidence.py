@@ -92,7 +92,12 @@ def retrieval_shortlist(passages: list[EvidencePassage], limit: int = 20) -> lis
 
 
 def diverse_packet(
-    passages: list[EvidencePassage], chars: int, limit: int = 6, *, alternative_slots: int = 1
+    passages: list[EvidencePassage],
+    chars: int,
+    limit: int = 6,
+    *,
+    alternative_slots: int = 1,
+    trace: list | None = None,
 ) -> list[EvidencePassage]:
     packet, seen, hosts = [], set(), Counter()
     used = 0
@@ -111,13 +116,26 @@ def diverse_packet(
             queues.append(query)
         host = urlsplit(passage.url).hostname
         fingerprint = digest(passage.text)
-        if fingerprint in seen or hosts[host] >= 2 or used + len(passage.text) > chars:
+        reason = (
+            "passage_limit"
+            if len(packet) == limit
+            else "duplicate_text"
+            if fingerprint in seen
+            else "per_host_limit"
+            if hosts[host] >= 2
+            else "character_limit"
+            if used + len(passage.text) > chars
+            else "retained"
+        )
+        if trace is not None:
+            trace.append({"passage_id": passage.id, "reason": reason})
+        if reason != "retained":
             continue
         packet.append(passage)
         seen.add(fingerprint)
         hosts[host] += 1
         used += len(passage.text)
-        if len(packet) == limit:
+        if len(packet) == limit and trace is None:
             break
     return packet
 
