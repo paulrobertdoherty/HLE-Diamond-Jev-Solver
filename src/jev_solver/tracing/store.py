@@ -45,6 +45,10 @@ class Store:
         CREATE TABLE IF NOT EXISTS calls (
           id INTEGER PRIMARY KEY, item TEXT, kind TEXT, reserved REAL, billed REAL,
           usage TEXT, state TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS allowances (
+          item TEXT, name TEXT, request TEXT, PRIMARY KEY(item,name));
+        CREATE TABLE IF NOT EXISTS responses (
+          item TEXT, key TEXT, value TEXT, PRIMARY KEY(item,key));
         """)
 
     @contextmanager
@@ -82,6 +86,29 @@ class Store:
         self.db.execute(
             "INSERT OR REPLACE INTO cache VALUES (?,?,?)", (item, key, canonical(value))
         )
+
+    def allowance(self, item, name, request):
+        """One durable item allowance; the same attempt can resume, never reset."""
+        with self.transaction():
+            row = self.db.execute(
+                "SELECT request FROM allowances WHERE item=? AND name=?", (item, name)
+            ).fetchone()
+            if row:
+                return row[0] == request
+            self.db.execute("INSERT INTO allowances VALUES (?,?,?)", (item, name, request))
+            self.event(item, "allowance_consumed", {"name": name, "request_hash": request})
+            return True
+
+    def response(self, item, key, value=None):
+        if value is not None:
+            self.db.execute(
+                "INSERT OR REPLACE INTO responses VALUES (?,?,?)", (item, key, canonical(value))
+            )
+            return value
+        row = self.db.execute(
+            "SELECT value FROM responses WHERE item=? AND key=?", (item, key)
+        ).fetchone()
+        return json.loads(row[0]) if row else None
 
     def checkpoint(self, item: str, state: dict) -> None:
         self.db.execute(

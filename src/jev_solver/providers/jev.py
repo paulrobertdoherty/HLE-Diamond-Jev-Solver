@@ -17,12 +17,25 @@ class Jev:
     async def request(
         self, item: str, stage: str, state: dict, questions: dict, *, final: bool = False
     ) -> dict[str, Judgment]:
+        builder = None
+        if self.config.remediation.context == "remediation-v1":
+            from .context import build_context
+
+            state, builder = build_context(
+                state,
+                lambda s: max(
+                    len(canonical({"state": s, "question": q}).encode()) for q in questions.values()
+                ),
+                32000,
+            )
+            self.store.event(item, "context_builder", {"phase": stage, **builder})
         request = {
             "stage": stage,
             "state": state,
             "questions": questions,
             "provider": asdict(self.config.jev),
             "config_hash": self.config.hash,
+            **({"builder_version": builder["version"]} if builder else {}),
         }
         key = digest(request)
         cached = self.store.cached(item, key)

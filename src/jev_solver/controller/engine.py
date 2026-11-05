@@ -338,6 +338,10 @@ class Solver:
                             revised.answer.strip()
                             and not assessment["eligible"]
                             and round_no == self.config.limits.rounds - 1
+                            and (
+                                self.config.remediation.generation != "remediation-v1"
+                                or self.store.allowance(q.id, "semantic_repair", revised.id)
+                            )
                         ):
                             self.transition(q.id, Phase.REVISE)
                             repair_context = {

@@ -200,12 +200,19 @@ class OpenAIBackbone:
                 or type(e).__name__ in {"APIConnectionError", "APITimeoutError"},
             ) from None
         usage = response.usage.model_dump()
+        reason = getattr(getattr(response, "incomplete_details", None), "reason", None)
+        refused = any(
+            getattr(part, "type", "") == "refusal"
+            for item in getattr(response, "output", [])
+            for part in getattr(item, "content", [])
+        )
         return {
             "text": response.output_text,
             "model": response.model,
             "usage": usage,
             "cost_usd": cost(self.config, usage),
-            "status": response.status,
+            "status": "refused" if refused else response.status,
+            "finish_reason": "length" if reason == "max_output_tokens" else reason,
         }
 
     async def close(self) -> None:
@@ -339,6 +346,45 @@ class Gateway:
 
     async def generate(
         self,
+        question,
+        context,
+        phase,
+        provider=None,
+        schema=None,
+        final=False,
+    ):
+        schema = schema or candidate_schema(self.config)
+        try:
+            return await self._generate(question, context, phase, provider, schema, final)
+        except (FormatError, json.JSONDecodeError) as error:
+            if self.config.remediation.generation != "remediation-v1" or "answer" not in schema.get(
+                "properties", {}
+            ):
+                raise
+            identity = digest(
+                {
+                    "phase": phase,
+                    "context": context,
+                    "schema": schema,
+                    "provider": asdict(provider or self.config.provider),
+                }
+            )
+            if not self.store.allowance(question.id, "format_regeneration", identity):
+                raise
+            replacement = {
+                **context,
+                "completion_instruction": "Return a COMPLETE concise replacement candidate under the same output cap. "
+                "The previous attempt was incomplete or malformed. Do not continue or concatenate JSON.",
+                "failed_attempt": identity,
+                "failure_type": type(error).__name__,
+            }
+            # One replacement only, shared by initial, revision and repair generations.
+            return await self._generate(
+                question, replacement, phase + "-complete", provider, schema, final
+            )
+
+    async def _generate(
+        self,
         question: QuestionView,
         context: dict,
         phase: str,
@@ -350,6 +396,19 @@ class Gateway:
         if question.images and not p.vision:
             raise ValueError("configured provider cannot preserve image inputs")
         schema = schema or candidate_schema(self.config)
+        full_context = context
+        builder = None
+        if self.config.remediation.context == "remediation-v1":
+            from .context import build_context
+
+            context, builder = build_context(
+                context, lambda c: input_envelope(question, c, schema, p), p.max_input_tokens
+            )
+            self.store.event(
+                question.id,
+                "context_builder",
+                {"phase": phase, **builder, "original_context": full_context},
+            )
         request = {
             "question": record(question),
             "context": context,
@@ -358,6 +417,7 @@ class Gateway:
             "provider": asdict(p),
             "config_hash": self.config.hash,
             "system": SYSTEM,
+            **({"builder_version": builder["version"]} if builder else {}),
         }
         key = digest(request)
         cached = self.store.cached(question.id, key)
@@ -384,13 +444,18 @@ class Gateway:
         client_key = digest(asdict(p))
         if client_key not in self.clients:
             self.clients[client_key] = make_backbone(p)
-        response = await self.budget.execute(
-            question.id,
-            "model",
-            upper_cost(p),
-            lambda: self.clients[client_key].generate(question, context, schema),
-            final=final,
-        )
+        recovery = self.config.remediation.generation == "remediation-v1"
+        response = self.store.response(question.id, key) if recovery else None
+        if response is None:
+            response = await self.budget.execute(
+                question.id,
+                "model",
+                upper_cost(p),
+                lambda: self.clients[client_key].generate(question, context, schema),
+                final=final,
+            )
+            if recovery:
+                self.store.response(question.id, key, response)
         self.store.event(question.id, "model_response", {"request_hash": key, **response})
         if response["model"] != p.model or response.get("status") != "completed":
             self.store.event(
@@ -405,6 +470,12 @@ class Gateway:
                     "finish_reason": response.get("finish_reason"),
                 },
             )
+            if (
+                response["model"] == p.model
+                and response.get("status") == "incomplete"
+                and response.get("finish_reason") in {None, "length"}
+            ):
+                raise FormatError("incomplete candidate generation")
             raise ProviderError("model changed or returned an incomplete/refused response")
         try:
             parsed = json.loads(response["text"])
@@ -421,7 +492,33 @@ class Gateway:
                 "model_output_rejected",
                 {"phase": phase, "request_hash": key, "reason": "non_object_output"},
             )
-            raise ValueError("structured model output must be an object")
+            raise FormatError("structured model output must be an object")
+        if recovery:
+            from .context import validate_schema
+
+            try:
+                validate_schema(parsed, schema)
+                if "answer" in schema.get("properties", {}):
+                    from ..judgments.citations import parse_candidate
+                    from ..models import EvidencePassage
+
+                    parse_candidate(
+                        parsed,
+                        phase,
+                        [EvidencePassage(**r) for r in full_context.get("evidence", [])],
+                        resolve=self.config.remediation.citations == "remediation-v1",
+                    )
+                elif "completeness" in schema.get("properties", {}):
+                    from ..judgments.verification import parse_audit
+
+                    parse_audit(parsed)
+            except (ValueError, TypeError, KeyError) as error:
+                self.store.event(
+                    question.id,
+                    "model_output_rejected",
+                    {"phase": phase, "request_hash": key, "reason": "typed_validation"},
+                )
+                raise FormatError("invalid structured output") from error
         self.store.cache(question.id, key, parsed)
         return parsed
 
@@ -441,3 +538,7 @@ def input_envelope(question, context, schema, provider):
         + 1024
         + len(question.images) * provider.image_token_reserve
     )
+
+
+class FormatError(ProviderError, ValueError):
+    pass
