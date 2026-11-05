@@ -6,6 +6,37 @@ import re
 from ..models import Dependency, record
 
 
+def synthetic_final(question, context):
+    local = context["local_results"]
+    audit = synthetic_audit(question, {**context, "research_outcomes": []})
+    passed = audit["answer_check"]["status"] == "passed" and all(
+        d["status"] == "passed" for d in local["dependencies"] if d["critical"]
+    )
+    result = {
+        "status": "passed" if passed else "failed",
+        "reason": "Independent synthetic whole-answer check.",
+    }
+    ids = [d["id"] for d in local["dependencies"] if d["critical"]]
+    return {
+        "whole_answer": result,
+        "applicability": result,
+        "obligation_checks": [
+            {"id": o["id"], **result, "dependency_ids": ids}
+            for o in context["question_contract"]["obligations"]
+        ],
+        "interpretation_checks": [
+            {
+                "alternative": a,
+                "status": "not_run",
+                "reason": "Synthetic verifier cannot resolve an alternative.",
+            }
+            for a in context["question_contract"]["alternatives"]
+        ],
+        "derived_rechecks": [],
+        "source_scope": [],
+    }
+
+
 def synthetic_audit(question, context):
     draft = context["draft"]
     match = re.search(r"(-?\d+)\s*([+*\-/])\s*(-?\d+)", question.question)

@@ -244,6 +244,20 @@ class Solver:
             if self.config.adaptive and candidate.answer.strip()
             else {"constraints": {"status": "not_applicable"}}
         )
+        if self.config.remediation.final == "remediation-v1":
+            from ..judgments.answer import final_answer_check
+
+            audit, checks = await final_answer_check(
+                self.gateway,
+                q,
+                candidate,
+                evidence,
+                artifacts,
+                audit,
+                checks,
+                constraint_checks,
+                self.contracts.get(q.id),
+            )
         assessment = {
             "citation_checks": checks,
             "citation_failures": failures(checks),

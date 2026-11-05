@@ -80,6 +80,24 @@ async def select(
     assessments=None,
     latest_verification="",
 ):
+    remediation = getattr(getattr(gateway, "config", None), "remediation", None)
+    if remediation and remediation.final == "remediation-v1":
+        for candidate in candidates:
+            checked = (assessments or {}).get(candidate.id, {})
+            final_check = checked.get("final_check", {})
+            if (
+                not checked.get("eligible")
+                or final_check.get("candidate_id") != candidate.id
+                or any(
+                    final_check.get(k, {}).get("status") != "passed"
+                    for k in ("whole_answer", "applicability")
+                )
+                or any(
+                    d.get("check_provenance", {}).get("candidate_id", candidate.id) != candidate.id
+                    for d in checked.get("dependencies", [])
+                )
+            ):
+                raise ValueError("selection requires current candidate-scoped whole-answer checks")
     if policy == "vote":
         return vote(candidates)
     # Repeated drafts of the same answer must not get more chances than a

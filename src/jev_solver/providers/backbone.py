@@ -230,7 +230,11 @@ class MockBackbone:
         self.config = config
 
     async def generate(self, question: QuestionView, context: dict, schema: dict) -> dict:
-        if "requirements" in schema.get("properties", {}):
+        if "whole_answer" in schema.get("properties", {}):
+            from .mock_verification import synthetic_final
+
+            data = synthetic_final(question, context)
+        elif "requirements" in schema.get("properties", {}):
             claim = context["claim"]
             data = {
                 "coverage": True,
@@ -350,6 +354,18 @@ class MockBackbone:
                             }
                         ],
                     )
+        citation_properties = (
+            schema.get("properties", {}).get("citations", {}).get("items", {}).get("properties", {})
+        )
+        if "source_hash" in citation_properties:
+            for citation in data.get("citations", []):
+                citation["source_hash"] = next(
+                    p["source_hash"]
+                    for p in context.get("evidence", [])
+                    if p["id"] == citation["passage_id"]
+                )
+                citation.pop("start", None)
+                citation.pop("end", None)
         usage = {
             "input_tokens": 100,
             "output_tokens": 50,
@@ -560,6 +576,10 @@ class Gateway:
                     from ..judgments.graph import parse_contract
 
                     parse_contract(parsed, question)
+                elif "whole_answer" in schema.get("properties", {}):
+                    from ..judgments.answer import parse_whole_answer
+
+                    parse_whole_answer(parsed, full_context)
             except (ValueError, TypeError, KeyError) as error:
                 self.store.event(
                     question.id,

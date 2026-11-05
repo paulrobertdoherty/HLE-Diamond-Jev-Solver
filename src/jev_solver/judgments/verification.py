@@ -126,7 +126,7 @@ def parse_audit(value):
         if not isinstance(row, dict) or not {"status", "reason"} <= set(row):
             raise ValueError("invalid dependency check")
         dep = Dependency.parse({k: v for k, v in row.items() if k not in {"status", "reason"}})
-        row.update(record(dep))
+        row.update({k: list(v) if isinstance(v, tuple) else v for k, v in record(dep).items()})
         validate_check({k: row[k] for k in ("status", "reason")})
         if dep.id in ids:
             raise ValueError("duplicate audited dependency")
@@ -228,6 +228,13 @@ async def audit_dependencies(
         "tool_artifacts": artifacts,
         "research_outcomes": planner_outcomes(outcomes),
         "coverage_policy": gateway.config.coverage_policy,
+        **(
+            {
+                "audit_phase": "Discovery and local verification only. The separate whole-answer check runs after the actual local verdicts; answer_check here is provisional."
+            }
+            if gateway.config.remediation.final == "remediation-v1"
+            else {}
+        ),
         **(
             {
                 "question_contract": contract,
