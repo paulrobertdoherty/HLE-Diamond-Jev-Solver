@@ -81,6 +81,19 @@ async def research(solver, q, plan, round_no, previous):
             elif solver.corpus and p.id in cached.get("corpus_ids", []):
                 packet.append(p)
         outcome = cached["outcome"]
+        if config.remediation.packet == "remediation-v1":
+            ledger = [EvidencePassage(**r) for r in cached.get("ledger", [])]
+            ledger = [
+                p
+                for p in ledger
+                if (p.url, p.source_hash) in source_pages
+                and source_pages[(p.url, p.source_hash)]["text"][p.start : p.end] == p.text
+            ]
+            solver.store.passages(q.id, ledger)
+            valid_ids = {p.id for p in ledger}
+            solver.last_admitted[q.id] = [
+                EvidencePassage(**r) for r in cached.get("admitted", []) if r["id"] in valid_ids
+            ]
         safe_leads = []
         for lead in outcome["leads"]:
             try:
@@ -284,6 +297,8 @@ async def research(solver, q, plan, round_no, previous):
         config.relevance.packet,
         alternative_slots=config.relevance.alternative_slots,
         trace=packet_trace,
+        policy=config.remediation.packet,
+        critical_dependencies=[r["dependency_id"] for r in tasks],
     )
     boundaries += boundary_rows(
         "research_packet",
@@ -293,6 +308,9 @@ async def research(solver, q, plan, round_no, previous):
         budgets={"passages": config.relevance.packet, "characters": config.evidence_chars},
     )
     solver.store.event(q.id, "evidence_boundaries", boundaries)
+    if config.remediation.packet == "remediation-v1":
+        solver.store.passages(q.id, passages)
+        solver.last_admitted[q.id] = ranked
     outcome = {
         "round": round_no,
         "status": "budget_limited" if budget_limited else "evidence" if packet else "no_evidence",
@@ -333,6 +351,11 @@ async def research(solver, q, plan, round_no, previous):
             "outcome": outcome,
             "source_requests": [url for url, page in pages.items() if page],
             "corpus_ids": sorted(corpus_ids),
+            **(
+                {"ledger": [record(p) for p in passages], "admitted": [record(p) for p in ranked]}
+                if config.remediation.packet == "remediation-v1"
+                else {}
+            ),
         },
     )
     return packet, outcome

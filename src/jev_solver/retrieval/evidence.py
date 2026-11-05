@@ -146,7 +146,18 @@ def diverse_packet(
     *,
     alternative_slots: int = 1,
     trace: list | None = None,
+    policy="legacy-v1",
+    critical_dependencies=(),
 ) -> list[EvidencePassage]:
+    if policy == "remediation-v1":
+        return coverage_packet(
+            passages,
+            chars,
+            limit,
+            alternative_slots=alternative_slots,
+            critical_dependencies=critical_dependencies,
+            trace=trace,
+        )
     packet, seen, hosts = [], set(), Counter()
     used = 0
     # Reserve bounded room for uncertain alternatives before high scores can
@@ -185,6 +196,59 @@ def diverse_packet(
         used += len(passage.text)
         if len(packet) == limit and trace is None:
             break
+    return packet
+
+
+def coverage_packet(
+    passages, chars, limit, *, alternative_slots=1, critical_dependencies=(), trace=None
+):
+    from .structure import display_cost
+
+    unique = merge_associations(passages, text_identity=True)
+    pending = list(enumerate(unique))
+    packet, covered, hosts, used, uncertain = [], set(), Counter(), 0, 0
+    reasons = {}
+    critical = set(critical_dependencies) or {d for p in unique for d in p.dependency_ids}
+    while pending:
+        pending.sort(
+            key=lambda pair: (
+                -len((set(pair[1].dependency_ids) & critical) - covered),
+                -bool(pair[1].view.get("contradictory")),
+                hosts[urlsplit(pair[1].url).hostname] >= 2,
+                hosts[urlsplit(pair[1].url).hostname],
+                pair[1].relevance_status == "uncertain",
+                pair[0],
+                pair[1].id,
+            )
+        )
+        _, p = pending.pop(0)
+        reason = (
+            "passage_limit"
+            if len(packet) >= limit
+            else "uncertain_slot_limit"
+            if p.relevance_status == "uncertain" and uncertain >= alternative_slots
+            else "character_limit"
+            if used + display_cost(p) > chars
+            else "retained"
+        )
+        reasons[p.id] = reason
+        if reason == "retained":
+            packet.append(p)
+            covered.update(p.dependency_ids)
+            hosts[urlsplit(p.url).hostname] += 1
+            used += display_cost(p)
+            uncertain += p.relevance_status == "uncertain"
+    if trace is not None:
+        selected_text = {digest(p.text): p.id for p in unique}
+        for p in passages:
+            identity = selected_text[digest(p.text)]
+            trace.append(
+                {
+                    "passage_id": p.id,
+                    "reason": reasons[identity] if identity == p.id else "duplicate_text",
+                    "duplicate_of": identity if identity != p.id else None,
+                }
+            )
     return packet
 
 

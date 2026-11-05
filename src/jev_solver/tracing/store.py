@@ -49,6 +49,8 @@ class Store:
           item TEXT, name TEXT, request TEXT, PRIMARY KEY(item,name));
         CREATE TABLE IF NOT EXISTS responses (
           item TEXT, key TEXT, value TEXT, PRIMARY KEY(item,key));
+        CREATE TABLE IF NOT EXISTS evidence (
+          item TEXT, id TEXT, value TEXT, PRIMARY KEY(item,id));
         """)
 
     @contextmanager
@@ -109,6 +111,31 @@ class Store:
             "SELECT value FROM responses WHERE item=? AND key=?", (item, key)
         ).fetchone()
         return json.loads(row[0]) if row else None
+
+    def passages(self, item, values=()):
+        from ..models import EvidencePassage, record
+        from ..retrieval.evidence import merge_associations
+
+        existing = {
+            row[0]: EvidencePassage(**json.loads(row[1]))
+            for row in self.db.execute(
+                "SELECT id,value FROM evidence WHERE item=? ORDER BY rowid", (item,)
+            )
+        }
+        for passage in values:
+            old = existing.get(passage.id)
+            if old and any(
+                getattr(old, k) != getattr(passage, k)
+                for k in ("url", "source_hash", "text", "start", "end")
+            ):
+                raise ValueError("immutable passage identity changed")
+            merged = merge_associations([old, passage] if old else [passage])[0]
+            existing[passage.id] = merged
+            self.db.execute(
+                "INSERT OR REPLACE INTO evidence VALUES (?,?,?)",
+                (item, passage.id, canonical(record(merged))),
+            )
+        return list(existing.values())
 
     def checkpoint(self, item: str, state: dict) -> None:
         self.db.execute(

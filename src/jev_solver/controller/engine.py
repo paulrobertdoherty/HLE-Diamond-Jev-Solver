@@ -82,6 +82,7 @@ class Solver:
         self.round_numbers = {}
         self.research_outcomes = {}
         self.contracts, self.graphs, self.parents = {}, {}, {}
+        self.last_admitted = {}
 
     async def question_contract(self, q):
         if self.config.arm in {"B0", "B1"} or self.config.remediation.contract != "remediation-v1":
@@ -184,6 +185,16 @@ class Solver:
     async def assess(
         self, q: QuestionView, candidate: Candidate, evidence: list, artifacts=(), outcomes=()
     ) -> dict:
+        if self.config.remediation.packet == "remediation-v1":
+            refs = {c.passage_id for c in candidate.citations} | {
+                i for d in candidate.dependencies for i in d.passage_ids
+            }
+            evidence = list(
+                {
+                    p.id: p
+                    for p in [*evidence, *[p for p in self.store.passages(q.id) if p.id in refs]]
+                }.values()
+            )
         key = digest(
             {
                 "assessment_version": 3,
@@ -345,6 +356,10 @@ class Solver:
                             self.transition(q.id, Phase.RESEARCH, round=round_no)
                             findings = await self.research(q, current)
                             evidence_ledger.update((p.id, p) for p in findings)
+                            if self.config.remediation.packet == "remediation-v1":
+                                evidence_ledger.update(
+                                    (p.id, p) for p in self.last_admitted.get(q.id, [])
+                                )
                             cited = {c.passage_id for c in current.citations}
                             evidence = diverse_packet(
                                 findings
@@ -353,6 +368,12 @@ class Solver:
                                 self.config.evidence_chars,
                                 self.config.relevance.packet,
                                 alternative_slots=self.config.relevance.alternative_slots,
+                                policy=self.config.remediation.packet,
+                                critical_dependencies=[
+                                    d["id"]
+                                    for d in assessment["dependencies"]
+                                    if d["critical"] and d["status"] != "passed"
+                                ],
                             )
                             self.store.event(
                                 q.id,
