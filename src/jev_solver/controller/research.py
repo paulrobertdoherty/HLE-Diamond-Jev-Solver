@@ -234,6 +234,18 @@ async def research(solver, q, plan, round_no, previous):
                         dependency_id=query["dependency_id"],
                     )
                 )
+                if config.remediation.structure == "remediation-v1":
+                    from ..retrieval.structure import structured_passages
+
+                    passages.extend(
+                        structured_passages(
+                            page,
+                            query["missing_fact"],
+                            question=q.question,
+                            search_query=query["query"],
+                            dependency_id=query["dependency_id"],
+                        )
+                    )
 
     shortlist = retrieval_shortlist(passages, config.relevance.shortlist)
     boundaries = boundary_rows("fetched", passages, passages)

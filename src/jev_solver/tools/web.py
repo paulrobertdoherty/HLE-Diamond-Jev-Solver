@@ -149,7 +149,12 @@ class LiveWeb:
                         parsed = await extract_pdf(body)
                         text, title = parsed["text"], parsed["title"]
                     elif "html" in content_type:
-                        parser = MainText()
+                        if getattr(self, "structure_policy", "legacy-v1") == "remediation-v1":
+                            from .structure import StructuredText
+
+                            parser = StructuredText()
+                        else:
+                            parser = MainText()
                         parser.feed(body.decode(response.encoding or "utf-8", errors="replace"))
                         text, title = parser.text, "".join(parser.title)
                     elif any(t in content_type for t in ("text/plain", "text/markdown")):
@@ -166,6 +171,14 @@ class LiveWeb:
                         "redirects": redirects,
                         "body_sha256": hashlib.sha256(body).hexdigest(),
                         "filter_text": "".join(parser.parts) if "html" in content_type else text,
+                        **(
+                            {
+                                "structures": parser.structures,
+                                "extraction_version": "structure-map-v1",
+                            }
+                            if "html" in content_type and hasattr(parser, "structures")
+                            else {}
+                        ),
                     }
         raise Blocked("redirect_limit")
 
@@ -263,6 +276,7 @@ class AuditedWeb:
         self.config, self.store, self.budget, self.policy = config, store, budget, policy
         backends = {"mock": MockWeb, "brave": LiveWeb, "perplexity": PerplexityWeb}
         self.backend = backend if backend is not None else backends[config.search_backend]()
+        self.backend.structure_policy = config.remediation.structure
 
     def event(self, item: str, tool: str, key: str, outcome: str, rule="", replay=False):
         self.store.event(item, "tool", record(ToolEvent(tool, key, outcome, rule, replay)))
@@ -326,6 +340,11 @@ class AuditedWeb:
                 "url": url,
                 "filter": self.policy.version,
                 "parser": self.config.parser_version,
+                **(
+                    {"structure_policy": self.config.remediation.structure}
+                    if self.config.remediation.structure != "legacy-v1"
+                    else {}
+                ),
                 "config": self.config.hash,
             }
         )

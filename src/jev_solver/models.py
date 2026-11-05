@@ -66,6 +66,11 @@ class EvidencePassage:
     search_query: str = ""
     dependency_id: str = ""
     relevance_status: str = "not_run"
+    dependency_ids: tuple[str, ...] = ()
+    view: dict = field(default_factory=dict)
+    source_provenance: tuple[dict, ...] = ()
+    relevance_probabilities: dict | list = field(default_factory=dict)
+    dependency_version: int = 1
 
 
 CHECK_STATUSES = ("not_run", "not_applicable", "unavailable", "passed", "failed")
