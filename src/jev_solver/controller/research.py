@@ -270,9 +270,17 @@ async def research(solver, q, plan, round_no, previous):
     boundaries += boundary_rows(
         "shortlisted", passages, shortlist, reasons={p.id: "shortlist_limit" for p in passages}
     )
+    observations = []
     if config.arm in {"J2", "J23", "Jfull", "M"} or config.retrieval == "hybrid-jev":
         try:
-            ranked = await rerank(solver.jev, q.id, shortlist, config.relevance)
+            ranked = await rerank(
+                solver.jev,
+                q.id,
+                shortlist,
+                config.relevance,
+                task_policy=config.remediation.relevance,
+                observations=observations,
+            )
         except BudgetExceeded:
             # Preserve fetched material for review; absence of J2 is explicit.
             ranked = [
@@ -288,7 +296,27 @@ async def research(solver, q, plan, round_no, previous):
             if p.score > 0
         ]
     boundaries += boundary_rows(
-        "J2_admission", shortlist, ranked, reasons={p.id: "semantic_rejection" for p in shortlist}
+        "J2_executed",
+        shortlist,
+        [p for p in observations if p.relevance_status == "executed"],
+        reasons={
+            p.id: "judgment_unavailable"
+            if config.arm in {"J2", "J23", "Jfull", "M"}
+            else "not_applicable"
+            for p in shortlist
+        },
+        policy=config.remediation.relevance,
+    )
+    boundaries += boundary_rows(
+        "J2_admission",
+        shortlist,
+        ranked,
+        reasons={
+            p.id: "semantic_rejection"
+            if any(o.id == p.id and o.relevance_status == "executed" for o in observations)
+            else "judgment_unavailable"
+            for p in shortlist
+        },
     )
     packet_trace = []
     packet = diverse_packet(
@@ -328,6 +356,7 @@ async def research(solver, q, plan, round_no, previous):
         ],
         "excluded_ids": [p.id for p in shortlist if p.id not in {p.id for p in packet}],
         "boundaries": boundaries,
+        "relevance_observations": [record(p) for p in observations],
     }
     solver.store.event(q.id, "research_outcome", outcome)
     solver.store.event(
