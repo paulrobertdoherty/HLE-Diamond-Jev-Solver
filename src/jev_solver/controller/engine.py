@@ -90,6 +90,22 @@ class Solver:
         from ..judgments.graph import CONTRACT_SCHEMA, CONTRACT_TASK, parse_contract
 
         self.transition(q.id, Phase.CONTRACT)
+        corrected = self.store.db.execute(
+            "SELECT data FROM events WHERE item=? AND kind='contract_corrected' ORDER BY seq DESC LIMIT 1",
+            (q.id,),
+        ).fetchone()
+        if corrected:
+            saved = json.loads(corrected[0])["contract"]
+            restored = parse_contract(
+                {k: saved[k] for k in ("obligations", "alternatives")}, q, saved["version"]
+            )
+            if restored["hash"] != saved["hash"]:
+                raise ValueError("persisted question contract identity differs")
+            self.contracts[q.id] = restored
+            self.store.event(
+                q.id, "contract_replay", {"hash": restored["hash"], "version": restored["version"]}
+            )
+            return
         raw = await self.gateway.generate(
             q, {"task": CONTRACT_TASK}, "question-contract", schema=CONTRACT_SCHEMA
         )
@@ -614,6 +630,8 @@ async def run(
     split: str = "full",
     progress=None,
     question_ids: tuple[str, ...] = (),
+    *,
+    solver_factory=None,
 ) -> dict:
     config.validate()
     protocol = verify_protocol(config.protocol_manifest)
@@ -685,7 +703,7 @@ async def run(
         atomic_json(
             output / "manifest.json", {**manifest, "run_hash": run_hash, "created_at": created_at}
         )
-        solver = Solver(config, store, run_hash)
+        solver = (solver_factory or Solver)(config, store, run_hash)
         semaphore = asyncio.Semaphore(config.limits.concurrency)
 
         async def one(q):

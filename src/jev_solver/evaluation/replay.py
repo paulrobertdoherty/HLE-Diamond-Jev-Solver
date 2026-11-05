@@ -6,15 +6,47 @@ from ..models import digest
 from .offline import FrozenResponses, OfflineDispatchForbidden
 
 COMPONENTS = {"initial", "query", "search", "fetch", "J2", "J3", "audit", "revision", "selection"}
+REMEDIATION_COMPONENTS = COMPONENTS | {
+    "contract",
+    "structure",
+    "shortlist",
+    "packet",
+    "context",
+    "decomposition",
+    "support_aggregation",
+    "applicability",
+    "generation_recovery",
+}
 
 
 def validate_manifest(manifest):
     if (
-        manifest.get("version") != 1
+        manifest.get("version") not in {1, 2}
         or manifest.get("split") != "development"
         or manifest.get("policy_frozen") is not True
     ):
-        raise ValueError("replay requires a frozen development policy and version 1")
+        raise ValueError("replay requires a frozen development policy and supported version")
+    components = COMPONENTS if manifest["version"] == 1 else REMEDIATION_COMPONENTS
+    if manifest["version"] == 2:
+        import math
+
+        for key in (
+            "baseline_revision",
+            "historical_implementation_hash",
+            "comparison_kind",
+            "backend",
+        ):
+            if not isinstance(manifest.get(key), str) or not manifest[key]:
+                raise ValueError(f"remediation manifest requires {key}")
+        if manifest["backend"] not in {"mock", "brave", "perplexity"}:
+            raise ValueError("block experiments by a single search backend")
+        caps = manifest.get("spend_caps", {})
+        if set(caps) != {"item_usd", "run_usd", "aggregate_usd"} or any(
+            type(v) not in (int, float) or not math.isfinite(v) or v <= 0 for v in caps.values()
+        ):
+            raise ValueError("freeze positive item/run/aggregate spend caps")
+        if not caps["item_usd"] <= caps["run_usd"] <= caps["aggregate_usd"]:
+            raise ValueError("inconsistent experiment spend caps")
     for key in ("experiment_id", "evidence_policy", "acceptance", "shared", "arms"):
         if not manifest.get(key):
             raise ValueError(f"missing replay manifest field: {key}")
@@ -40,18 +72,30 @@ def validate_manifest(manifest):
     if not isinstance(arms, list) or len(arms) < 2 or len({a["id"] for a in arms}) != len(arms):
         raise ValueError("replay requires distinct paired arms")
     for arm in arms:
+        if manifest["version"] == 2:
+            import re
+
+            if not re.fullmatch(r"[A-Za-z0-9_-]+", arm["id"]):
+                raise ValueError("invalid experiment arm identifier")
         if any(not arm.get(k) for k in ("id", "config_hash", "implementation_hash", "components")):
             raise ValueError("arm requires configuration, implementation and component versions")
-        if set(arm["components"]) != COMPONENTS or any(
+        if set(arm["components"]) != components or any(
             not isinstance(value, dict)
-            or any(not value.get(k) for k in ("implementation", "model", "prompt"))
+            or any(
+                not value.get(k)
+                for k in (
+                    ("implementation", "model", "prompt", "schema")
+                    if manifest["version"] == 2
+                    else ("implementation", "model", "prompt")
+                )
+            )
             for value in arm["components"].values()
         ):
             raise ValueError("identify every component's implementation, model and prompt")
         changed = arm.get("changed_components", [])
-        if not isinstance(changed, list) or not set(changed) <= COMPONENTS:
+        if not isinstance(changed, list) or not set(changed) <= components:
             raise ValueError("unknown intervention component")
-        actual = {key for key in COMPONENTS if arm["components"][key] != arms[0]["components"][key]}
+        actual = {key for key in components if arm["components"][key] != arms[0]["components"][key]}
         if actual != set(changed):
             raise ValueError("declared intervention differs from component identities")
     return deepcopy(manifest)
@@ -62,10 +106,11 @@ class ControlledReplay:
         self.manifest = validate_manifest(manifest)
         self.frozen = FrozenResponses(frozen)
         self.ledger = []
+        self.generated = {}
 
     def contract(self, arm_id, component, inputs):
         arm = next((a for a in self.manifest["arms"] if a["id"] == arm_id), None)
-        if arm is None or component not in COMPONENTS:
+        if arm is None or component not in arm["components"]:
             raise ValueError("unknown replay arm/component")
         return {
             "component": component,
@@ -77,6 +122,9 @@ class ControlledReplay:
     async def request(self, arm_id, component, inputs, *, generate=None):
         contract = self.contract(arm_id, component, inputs)
         entry = {"arm": arm_id, "component": component, "input_hash": digest(contract)}
+        if digest(contract) in self.generated:
+            self.ledger.append({**entry, "behavior": "generated_reuse"})
+            return deepcopy(self.generated[digest(contract)]["response"])
         try:
             response = self.frozen.replay(contract)
             entry["behavior"] = "frozen"
@@ -87,7 +135,12 @@ class ControlledReplay:
             entry["behavior"] = "new_call"
             self.ledger.append(entry)
             try:
-                return await generate(deepcopy(inputs))
+                response = await generate(deepcopy(inputs))
+                self.generated[digest(contract)] = {
+                    "contract": contract,
+                    "response": deepcopy(response),
+                }
+                return response
             except BaseException:
                 entry["failed"] = True
                 raise
@@ -153,4 +206,15 @@ def controlled_comparison(manifest, grades_by_arm, *, seed=17, workflow_rows=())
             for arm in ids
         },
         "development_only": True,
+        "promotion": {
+            arm: {
+                "point_estimate_gate": reports[arm]["accuracy"] > reports[ids[0]]["accuracy"]
+                and reports[arm]["wrong_answer_acceptance"]["numerator"]
+                <= reports[ids[0]]["wrong_answer_acceptance"]["numerator"],
+                "conclusion": "inconclusive"
+                if differences[arm]["difference_ci95"][0] <= 0
+                else "paired improvement; deterministic and semantic gates still required",
+            }
+            for arm in ids[1:]
+        },
     }

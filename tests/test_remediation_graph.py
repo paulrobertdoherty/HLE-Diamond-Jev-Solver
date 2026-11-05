@@ -1,5 +1,10 @@
 import json
 import unittest
+import tempfile
+import time
+from pathlib import Path
+from dataclasses import replace
+from unittest.mock import AsyncMock
 
 from jev_solver.judgments.graph import (
     parse_contract,
@@ -8,9 +13,21 @@ from jev_solver.judgments.graph import (
     propagate_failures,
 )
 from jev_solver.models import Dependency, QuestionView, record
+from jev_solver.config import Config, RemediationPolicy
+from jev_solver.controller.engine import Solver
+from jev_solver.tracing.store import Store
 
 
 class PersistentGraphTests(unittest.TestCase):
+    def test_edges_follow_logical_identity_across_local_candidate_ids(self):
+        nodes = [
+            self.dep("candidate-local", logical_id="stable-premise", status="not_run"),
+            self.dep("answer", kind="derived", depends_on=["stable-premise"]),
+        ]
+        validate_graph(nodes, self.contract())
+        propagate_failures(nodes)
+        self.assertEqual(nodes[1]["status"], "not_run")
+
     def contract(self):
         return parse_contract(
             {
@@ -141,3 +158,33 @@ class PersistentGraphTests(unittest.TestCase):
         raw["obligations"][0]["anchor"] = "not in question"
         with self.assertRaisesRegex(ValueError, "anchored"):
             parse_contract(raw, QuestionView("q", "Find the value after completion."))
+
+
+class ContractResumeTests(unittest.IsolatedAsyncioTestCase):
+    async def test_corrected_contract_restores_version_without_new_generation_allowance(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(Path(tmp) / "events.sqlite3")
+            config = replace(Config(), remediation=RemediationPolicy(contract="remediation-v1"))
+            solver = Solver(config, store, "fixture")
+            q = QuestionView("q", "Compute 6 * 7.")
+            solver.starts[q.id] = time.time()
+            await solver.question_contract(q)
+            raw = {k: solver.contracts[q.id][k] for k in ("obligations", "alternatives")}
+            raw["alternatives"] = ["Interpret units if specified."]
+            corrected = solver.correct_contract(
+                q, raw, "Preserve the answer-changing interpretation."
+            )
+            await solver.close()
+            restored = Solver(config, store, "fixture")
+            restored.starts[q.id] = time.time()
+            restored.gateway.generate = AsyncMock(
+                side_effect=AssertionError("A correction must survive resume.")
+            )
+            try:
+                await restored.question_contract(q)
+                self.assertEqual(restored.contracts[q.id]["hash"], corrected["hash"])
+                self.assertEqual(restored.contracts[q.id]["version"], 2)
+                restored.gateway.generate.assert_not_awaited()
+            finally:
+                await restored.close()
+                store.close()

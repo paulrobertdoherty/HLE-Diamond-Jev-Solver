@@ -89,6 +89,54 @@ def parser() -> argparse.ArgumentParser:
     s.add_argument("--result-limit", type=int, default=20)
     s = sub.add_parser("replay-validate")
     s.add_argument("--manifest", type=Path, required=True)
+    s = sub.add_parser("remediation-freeze")
+    s.add_argument("--baseline", required=True)
+    s.add_argument("--historical", type=Path)
+    s.add_argument("--artifact", type=Path, action="append", default=[])
+    s.add_argument("--output", type=Path, required=True)
+    s = sub.add_parser("replay-freeze")
+    s.add_argument("--experiment-id", required=True)
+    s.add_argument("--arm", action="append", required=True)
+    s.add_argument(
+        "--source-root",
+        action="append",
+        default=[],
+        help="ARM_ID=frozen/source/tree for the exact comparison implementation",
+    )
+    s.add_argument("--questions", type=Path, required=True)
+    s.add_argument("--baseline", required=True)
+    s.add_argument("--historical-hash", required=True)
+    s.add_argument("--aggregate-usd", type=float, required=True)
+    s.add_argument("--replications", type=int, default=1)
+    s.add_argument(
+        "--comparison",
+        choices=[
+            "integrated",
+            "generation",
+            "matched-j23",
+            "routing",
+            "deterministic",
+            "retrieval-j2",
+            "support-j3",
+            "verification",
+            "matched-cost",
+        ],
+        default="integrated",
+    )
+    s.add_argument("--frozen", type=Path)
+    s.add_argument("--output", type=Path, required=True)
+    s = sub.add_parser("replay-run")
+    s.add_argument("--manifest", type=Path, required=True)
+    s.add_argument("--arm", action="append", required=True)
+    s.add_argument("--questions", type=Path, required=True)
+    s.add_argument("--output", type=Path, required=True)
+    s.add_argument("--frozen", type=Path)
+    s.add_argument(
+        "--launch",
+        action="store_true",
+        help="explicitly launch fresh paid calls under the frozen caps",
+    )
+    s.add_argument("--resume", action="store_true")
     s = sub.add_parser("replay-report")
     s.add_argument("--manifest", type=Path, required=True)
     s.add_argument(
@@ -251,6 +299,76 @@ def execute(args) -> dict:
 
         manifest = validate_manifest(json.loads(args.manifest.read_text()))
         return {"valid": True, "manifest_hash": digest(manifest), "paid_calls_dispatched": 0}
+    if args.command == "remediation-freeze":
+        from .evaluation.remediation import freeze_comparison
+
+        result = freeze_comparison(
+            Path.cwd(),
+            args.baseline,
+            args.output,
+            artifacts=args.artifact,
+            historical=args.historical,
+        )
+        return {"baseline_revision": result["baseline_revision"], "paid_calls_dispatched": 0}
+    if args.command in {"replay-freeze", "replay-run"}:
+        configs = {}
+        config_paths = {}
+        for value in args.arm:
+            identifier, separator, path = value.partition("=")
+            if not separator or not identifier or identifier in configs:
+                raise ValueError("provide each arm once as ARM_ID=config.json")
+            configs[identifier] = Config.load(path)
+            config_paths[identifier] = Path(path)
+        frozen = json.loads(args.frozen.read_text()) if args.frozen else []
+        if args.command == "replay-freeze":
+            from .evaluation.manifests import freeze_manifest
+            from .benchmarks.data import load_questions, load_split
+            from .tracing.store import atomic_json
+
+            if args.output.exists():
+                raise ValueError("frozen experiment already exists; use a new identity")
+            source_roots = {}
+            for value in args.source_root:
+                identifier, separator, path = value.partition("=")
+                if not separator or identifier not in configs or identifier in source_roots:
+                    raise ValueError("provide each isolated source as ARM_ID=PATH")
+                source_roots[identifier] = Path(path)
+            questions = load_questions(args.questions)
+            if any(c.live for c in configs.values()):
+                data_manifest = json.loads((args.questions.parent / "manifest.json").read_text())
+                split = load_split(
+                    args.questions.parent / "split.json", questions, data_manifest.get("split_hash")
+                )
+                questions = [q for q in questions if q.id in set(split["development"])]
+            result = freeze_manifest(
+                args.experiment_id,
+                configs,
+                [q.id for q in questions],
+                baseline_revision=args.baseline,
+                historical_implementation_hash=args.historical_hash,
+                aggregate_usd=args.aggregate_usd,
+                replications=args.replications,
+                comparison_kind=args.comparison,
+                frozen=frozen,
+                source_roots=source_roots,
+                config_paths=config_paths,
+                question_views=questions,
+            )
+            atomic_json(args.output, result)
+            return {"manifest": str(args.output), "paid_calls_dispatched": 0}
+        from .evaluation.orchestration import run_experiment
+
+        return asyncio.run(
+            run_experiment(
+                json.loads(args.manifest.read_text()),
+                config_paths,
+                args.questions,
+                args.output,
+                frozen=frozen,
+                launch=args.launch,
+                resume=args.resume,
+            )
+        )
     if args.command == "replay-report":
         from .evaluation.replay import controlled_comparison
         from .tracing.store import atomic_json

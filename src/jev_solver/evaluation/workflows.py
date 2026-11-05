@@ -144,6 +144,9 @@ def extra_workflow_metrics(rows):
             pairs += 1
             stable += left == right
     return {
+        "evidence_boundaries": boundary_metrics(
+            [r["record"] for r in rows if r.get("stage") == "boundary"]
+        ),
         "audit_cases": counts["audit_cases"],
         "audit_claim_discovery": fraction(counts["discovered"], counts["claims"]),
         "audit_checked_coverage": fraction(counts["checked"], counts["claims"]),

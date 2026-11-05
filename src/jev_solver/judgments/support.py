@@ -165,6 +165,16 @@ def aggregate_support(requirements, verdicts):
         )
         leaves.append({"requirement": requirement, "verdict": verdict})
     required = [r for r in leaves if r["requirement"]["necessary"]]
+    by_id = {r["requirement"]["id"]: r for r in leaves}
+    for _ in leaves:
+        for leaf in leaves:
+            parents = [by_id[i] for i in leaf["requirement"]["depends_on"]]
+            if leaf["verdict"] == "supported" and any(p["verdict"] != "supported" for p in parents):
+                leaf["verdict"] = (
+                    "unavailable"
+                    if any(p["verdict"] == "unavailable" for p in parents)
+                    else "insufficient"
+                )
     overall = (
         "contradicted"
         if conflicts
@@ -249,6 +259,8 @@ async def support_claim(gateway, jev, q, candidate, claim, evidence, *, version=
                     "passage_id": p.id,
                     "source_hash": p.source_hash,
                     "request_hash": digest(state) if state else None,
+                    "span": state["span"] if state else None,
+                    "quote": state["quote"] if state else None,
                     "verdict": verdict,
                     "judgment": record(judgment) if judgment else None,
                 }

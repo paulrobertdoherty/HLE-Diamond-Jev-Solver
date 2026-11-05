@@ -62,12 +62,48 @@ def evidence_ids(value):
     if isinstance(value, dict):
         if "source_hash" in value and isinstance(value.get("id"), str):
             ids.add(value["id"])
+        if "source_hash" in value and isinstance(value.get("canonical_passage_id"), str):
+            ids.add(value["canonical_passage_id"])
         for item in value.values():
             ids.update(evidence_ids(item))
     elif isinstance(value, list):
         for item in value:
             ids.update(evidence_ids(item))
     return ids
+
+
+def identified_excerpts(passage, spans):
+    """An explicit excerpt view; never assign shortened text to the canonical ID."""
+    if not isinstance(spans, list) or not 1 <= len(spans) <= 12:
+        raise ValueError("bounded canonical excerpt spans required")
+    excerpts = []
+    for span in spans:
+        if (
+            not isinstance(span, dict)
+            or set(span) != {"start", "end"}
+            or type(span["start"]) is not int
+            or type(span["end"]) is not int
+            or not 0 <= span["start"] < span["end"] <= len(passage["text"])
+        ):
+            raise ValueError("invalid canonical excerpt coordinates")
+        a, b = span["start"], span["end"]
+        excerpts.append(
+            {
+                "start": a,
+                "end": b,
+                "source_start": passage["start"] + a,
+                "source_end": passage["start"] + b,
+                "text": passage["text"][a:b],
+            }
+        )
+    return {
+        "canonical_passage_id": passage["id"],
+        "source_hash": passage["source_hash"],
+        "url": passage["url"],
+        "canonical_length": len(passage["text"]),
+        "excerpts": excerpts,
+        "view_version": "canonical-excerpts-v1",
+    }
 
 
 def build_context(context, bound, limit):
@@ -127,6 +163,15 @@ def build_context(context, bound, limit):
 
         result = {k: references(v, k == "evidence") for k, v in result.items()}
         reasons.append("redundant_evidence_serialization")
+    if bound(result) > limit and result.get("required_excerpts"):
+        # The trusted caller must enumerate ALL required spans, including relevant
+        # conflicts and qualifiers. Unannotated passages stay complete.
+        plan = result.pop("required_excerpts")
+        result["evidence"] = [
+            identified_excerpts(p, plan[p["id"]]) if p["id"] in plan else p
+            for p in result.get("evidence", [])
+        ]
+        reasons.append("identified_canonical_excerpts")
     final = bound(result)
     report = {
         "version": BUILDER_VERSION,

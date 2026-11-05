@@ -41,6 +41,9 @@ class StructuredText(MainText):
             self.open_regions.append({"tag": tag, "stream": stream, "kind": kind, "start": start})
         if tag == "table":
             self.tables.append({"headers": [], "available": True})
+            if len(self.tables) > 1:
+                for table in self.tables:
+                    table["available"] = False
         if tag == "tr" and self.tables:
             self.row = {"stream": stream, "start": start, "cells": [], "kind": "table_row"}
         if tag in {"th", "td"} and self.row:

@@ -8,13 +8,31 @@ from unittest.mock import AsyncMock
 
 from jev_solver.config import Config, RemediationPolicy
 from jev_solver.controller.budget import Budget
+from jev_solver.controller.budget import BudgetExceeded
 from jev_solver.models import QuestionView, digest
 from jev_solver.providers.backbone import Gateway, ProviderError, CANDIDATE_SCHEMA, input_envelope
-from jev_solver.providers.context import build_context
+from jev_solver.providers.context import build_context, identified_excerpts
 from jev_solver.tracing.store import Store
 
 
 class ContextRecoveryTests(unittest.IsolatedAsyncioTestCase):
+    def test_identified_excerpt_keeps_unicode_offsets_and_canonical_identity(self):
+        p = {
+            "id": "p",
+            "source_hash": "hash",
+            "url": "https://example.org",
+            "start": 100,
+            "text": "Δ🧪 quotation",
+        }
+        view = identified_excerpts(p, [{"start": 1, "end": 2}])
+        self.assertNotIn("text", view)
+        self.assertEqual(view["canonical_passage_id"], "p")
+        self.assertEqual(
+            view["excerpts"],
+            [{"start": 1, "end": 2, "source_start": 101, "source_end": 102, "text": "🧪"}],
+        )
+        self.assertEqual(p["text"], "Δ🧪 quotation")
+
     def gateway(self, **policies):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
@@ -112,3 +130,21 @@ class ContextRecoveryTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(ProviderError):
                 await gateway.generate(QuestionView("q", "Compute."), {}, "initial")
             self.assertEqual(gateway.budget.execute.await_count, 1)
+
+    async def test_regeneration_consumes_the_existing_total_call_cap(self):
+        gateway = self.gateway(generation="remediation-v1")
+        gateway.config = replace(
+            gateway.config, limits=replace(gateway.config.limits, calls=1, finalization_calls=0)
+        )
+        gateway.budget.config = gateway.config
+        client = SimpleNamespace(
+            generate=AsyncMock(
+                return_value={**self.output(), "text": "malformed", "cost_usd": 0, "usage": {}}
+            ),
+            close=AsyncMock(),
+        )
+        gateway.clients[digest(asdict(gateway.config.provider))] = client
+        with self.assertRaises(BudgetExceeded):
+            await gateway.generate(QuestionView("q", "Compute."), {}, "initial")
+        self.assertEqual(client.generate.await_count, 1)
+        self.assertEqual(gateway.store.db.execute("SELECT COUNT(*) FROM calls").fetchone()[0], 1)

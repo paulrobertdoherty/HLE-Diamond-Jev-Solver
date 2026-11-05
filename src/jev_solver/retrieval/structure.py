@@ -26,7 +26,12 @@ def structural_spans(page):
             else "heading"
         )
         spans.append(
-            {"kind": kind, "start": heading.start(), "end": min(end, heading.start() + 2400)}
+            {
+                "kind": kind,
+                "start": heading.start(),
+                "end": min(end, heading.start() + 2400),
+                "body_end": end,
+            }
         )
     return [
         s
@@ -49,6 +54,7 @@ def structured_passages(page, subquestion, *, question="", search_query="", depe
             "canonical_start": a,
             "canonical_end": b,
             "labels_are_metadata": True,
+            "body_truncated": b < span.get("body_end", span["end"]),
         }
         if span["kind"] == "table_row" and "headers" not in span:
             view["header_status"] = "unavailable"

@@ -93,14 +93,67 @@ async def components(config: Config, cases: Path, output: Path, judge: str = "je
             from ..judgments.pipeline import RELEVANCE, SUPPORT
 
             spec = RELEVANCE if row["stage"] == "J2" else SUPPORT
+            remediated = (
+                config.remediation.relevance == "remediation-v1"
+                if row["stage"] == "J2"
+                else config.remediation.support == "remediation-v1"
+            )
+            if remediated and judge == "stored":
+                raise ValueError("changed relevance/support contracts require fresh judgments")
+            if remediated and row["stage"] == "J2":
+                from ..judgments.pipeline import relevance_request
+
+                passage = EvidencePassage(
+                    row.get("passage_id", row["id"]),
+                    state.get("url", "https://fixture.invalid"),
+                    state.get("source_hash", digest(state["passage"])),
+                    state["passage"],
+                    0,
+                    len(state["passage"]),
+                    "frozen",
+                    "frozen",
+                    question=state["question"],
+                    subquestion=state["missing_fact"],
+                    search_query=state["search_query"],
+                    dependency_id=state.get("dependency_id", ""),
+                    dependency_version=state.get("dependency_version", 1),
+                    view=state.get("structured_view", {}),
+                )
+                state, spec = relevance_request(passage, "remediation-v1")
             confidence = None
             if judge == "stored":
                 observed = row.get("observed", {})
                 value, confidence = observed.get("value"), observed.get("confidence")
             elif judge == "jev":
-                judged = await jev.request(row["id"], row["stage"], state, {"judgment": spec})
-                value = judged["judgment"].value if "judgment" in judged else None
-                confidence = judged["judgment"].confidence if "judgment" in judged else None
+                if remediated and row["stage"] == "J3":
+                    from ..judgments.support import support_claim
+                    from ..models import Candidate
+
+                    p = EvidencePassage(
+                        row.get("passage_id", row["id"]),
+                        state.get("url", "https://fixture.invalid"),
+                        state.get("source_hash", digest(state["source_context"])),
+                        state["source_context"],
+                        0,
+                        len(state["source_context"]),
+                        "frozen",
+                        "frozen",
+                    )
+                    support = await support_claim(
+                        gateway,
+                        jev,
+                        QuestionView(
+                            row["id"], state.get("question", "Assess the declared claim.")
+                        ),
+                        Candidate("component", "", 0, ""),
+                        state["claim"],
+                        [p],
+                    )
+                    value = support["support"] if support["support"] != "unavailable" else None
+                else:
+                    judged = await jev.request(row["id"], row["stage"], state, {"judgment": spec})
+                    value = judged["judgment"].value if "judgment" in judged else None
+                    confidence = judged["judgment"].confidence if "judgment" in judged else None
             elif judge == "backbone":
                 value_schema = (
                     {"type": "number"}
@@ -293,15 +346,29 @@ def packet_metrics(config, results, judge="jev"):
                     subquestion=state.get("missing_fact", state.get("subquestion", "")),
                     score=r["value"],
                     confidence=r["confidence"],
+                    dependency_id=state.get("dependency_id", ""),
+                    view=state.get("structured_view", {}),
                 )
             )
-        ids = {p.id for p in retrieval_shortlist(passages, config.relevance.shortlist)}
+        ids = {
+            p.id
+            for p in retrieval_shortlist(
+                passages,
+                config.relevance.shortlist,
+                policy=config.remediation.shortlist,
+                structural_slots=config.remediation.structural_slots,
+            )
+        }
         shortlist = [p for p in passages if p.id in ids]
         if judge == "lexical" or any(p.score is None for p in shortlist):
             filtered = [
                 replace(p, relevance_status="unavailable" if judge == "jev" else "not_applicable")
                 for p in lexical_rank(shortlist)
                 if p.score > 0
+                or (
+                    config.remediation.shortlist == "remediation-v1"
+                    and p.view.get("kind") in {"definition", "theorem", "table_row"}
+                )
             ]
         else:
             filtered = filter_relevance(shortlist, config.relevance)
@@ -310,6 +377,7 @@ def packet_metrics(config, results, judge="jev"):
             config.evidence_chars,
             config.relevance.packet,
             alternative_slots=config.relevance.alternative_slots,
+            policy=config.remediation.packet,
         )
         selected = {p.id for p in packet}
         filtered_ids = {p.id for p in filtered}
@@ -436,7 +504,7 @@ def workflow_metrics(cases: Path, output: Path):
             answerable += bool(gold)
             rejected += bool(gold) and choice is None
             selection_count += 1
-        elif row.get("stage") not in {"audit", "visual", "eligibility", "reference"}:
+        elif row.get("stage") not in {"audit", "visual", "eligibility", "reference", "boundary"}:
             raise ValueError("unknown workflow stage")
     from .workflows import extra_workflow_metrics
 

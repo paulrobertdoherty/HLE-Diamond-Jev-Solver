@@ -88,6 +88,12 @@ async def select(
             if (
                 not checked.get("eligible")
                 or final_check.get("candidate_id") != candidate.id
+                or final_check.get("question_hash") != digest(record(question))
+                or checked.get("coverage", {}).get("status") != "passed"
+                or any(
+                    d["critical"] and d["status"] != "passed"
+                    for d in checked.get("dependencies", [])
+                )
                 or any(
                     final_check.get(k, {}).get("status") != "passed"
                     for k in ("whole_answer", "applicability")

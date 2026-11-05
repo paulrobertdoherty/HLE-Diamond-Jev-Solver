@@ -117,6 +117,7 @@ def validate_graph(dependencies, contract):
     if len(dependencies) > 12:
         raise ValueError("incomplete coverage: more than twelve active premises")
     by_id = {d["id"]: d for d in dependencies}
+    references = reference_map(dependencies)
     logical = {d["logical_id"] or d["id"] for d in dependencies}
     if len(by_id) != len(dependencies) or len(logical) != len(dependencies):
         raise ValueError("duplicate graph identity")
@@ -124,6 +125,9 @@ def validate_graph(dependencies, contract):
     visiting, complete = set(), set()
 
     def visit(identifier):
+        if identifier not in references:
+            raise ValueError("dangling premise reference")
+        identifier = references[identifier]["id"]
         if identifier in visiting:
             raise ValueError("dependency cycle")
         if identifier in complete:
@@ -142,6 +146,16 @@ def validate_graph(dependencies, contract):
     for identifier in by_id:
         visit(identifier)
     return by_id
+
+
+def reference_map(dependencies):
+    result = {}
+    for dep in dependencies:
+        for key in {dep["id"], dep["logical_id"] or dep["id"]}:
+            if key in result and result[key]["id"] != dep["id"]:
+                raise ValueError("ambiguous local/logical premise reference")
+            result[key] = dep
+    return result
 
 
 def reconcile_graph(dependencies, previous, contract, dispositions=()):
@@ -164,7 +178,7 @@ def reconcile_graph(dependencies, previous, contract, dispositions=()):
                 current["premise_version"] = max(
                     old["premise_version"] + 1, current["premise_version"]
                 )
-                invalid.add(current["id"])
+                invalid.update((current["id"], current["logical_id"] or current["id"]))
                 # Reclassification alone cannot erase the old factual basis.
                 if old["kind"] == "factual" and current["kind"] != "factual":
                     current.update(
@@ -213,7 +227,7 @@ def reconcile_graph(dependencies, previous, contract, dispositions=()):
                 "reason": "Necessary earlier premise omitted; remains unresolved.",
             }
             dependencies.append(inherited)
-            invalid.add(inherited["id"])
+            invalid.update((inherited["id"], inherited["logical_id"] or inherited["id"]))
             events.append({"logical_id": identity, "event": "premise_retained"})
     by_id = validate_graph(dependencies, contract)
     changed = True
@@ -221,7 +235,7 @@ def reconcile_graph(dependencies, previous, contract, dispositions=()):
         changed = False
         for d in dependencies:
             if set(d["depends_on"]) & invalid and d["id"] not in invalid:
-                invalid.add(d["id"])
+                invalid.update((d["id"], d["logical_id"] or d["id"]))
                 d["status"], d["reason"] = (
                     "not_run",
                     "Changed upstream premise invalidated this check.",
@@ -233,7 +247,7 @@ def reconcile_graph(dependencies, previous, contract, dispositions=()):
 
 
 def propagate_failures(dependencies):
-    by_id = {d["id"]: d for d in dependencies}
+    by_id = reference_map(dependencies)
     for _ in dependencies:
         for dep in dependencies:
             if any(by_id[i]["status"] != "passed" for i in dep["depends_on"]):

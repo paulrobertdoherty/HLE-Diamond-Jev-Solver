@@ -476,6 +476,7 @@ class Gateway:
             **({"builder_version": builder["version"]} if builder else {}),
         }
         key = digest(request)
+        self.store.event(question.id, "model_request", {"request_hash": key, **request})
         cached = self.store.cached(question.id, key)
         if cached is not None:
             self.store.event(question.id, "model_replay", {"request_hash": key, "model": p.model})

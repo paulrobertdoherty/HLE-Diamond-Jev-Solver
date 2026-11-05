@@ -146,6 +146,9 @@ def parse_whole_answer(raw, context):
 def apply_final_result(raw, audit, citations, evidence, candidate):
     audit, citations = deepcopy(audit), deepcopy(citations)
     nodes = {d["id"]: d for d in audit["dependencies"]}
+    from .graph import reference_map
+
+    references = reference_map(audit["dependencies"])
     sources = {p.id: p for p in evidence}
     excluded = set()
     for scope in raw["source_scope"]:
@@ -190,14 +193,17 @@ def apply_final_result(raw, audit, citations, evidence, candidate):
                     if node["reason"].startswith("Atomic source support:")
                     else node["status"]
                 )
-    for recheck in raw["derived_rechecks"]:
-        node = nodes[recheck["id"]]
-        if all(nodes[i]["status"] == "passed" for i in node["depends_on"]):
-            node.update({k: recheck[k] for k in ("status", "reason", "basis")})
-            node["method"] = "independent_final_derivation"
+    pending = list(raw["derived_rechecks"])
+    for _ in range(len(pending)):
+        for recheck in pending[:]:
+            node = nodes[recheck["id"]]
+            if all(references[i]["status"] == "passed" for i in node["depends_on"]):
+                node.update({k: recheck[k] for k in ("status", "reason", "basis")})
+                node["method"] = "independent_final_derivation"
+                pending.remove(recheck)
     from .graph import propagate_failures
 
-    if all(i in nodes for n in nodes.values() for i in n["depends_on"]):
+    if all(i in references for n in nodes.values() for i in n["depends_on"]):
         propagate_failures(list(nodes.values()))
     for obligation in raw["obligation_checks"]:
         if any(nodes[i]["status"] != "passed" for i in obligation["dependency_ids"]):
@@ -251,7 +257,15 @@ async def final_answer_check(
             q, context, f"whole-answer-{candidate.id}", schema=WHOLE_ANSWER_SCHEMA, final=True
         )
         raw = parse_whole_answer(raw, context)
-        return apply_final_result(raw, audit, citations, evidence, candidate)
+        checked, citations = apply_final_result(raw, audit, citations, evidence, candidate)
+        checked["final_check"].update(
+            {
+                "question_hash": digest(record(q)),
+                "contract_hash": context["question_contract"]["hash"],
+                "input_hash": digest(context),
+            }
+        )
+        return checked, citations
     except (ProviderError, ValueError, TypeError, KeyError):
         audit = deepcopy(audit)
         audit["answer_check"] = check("unavailable", "Independent whole-answer check unavailable.")

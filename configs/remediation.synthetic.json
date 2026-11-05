@@ -1,0 +1,17 @@
+{
+  "arm": "J23",
+  "track": "controlled",
+  "remediation": {
+    "citations": "remediation-v1",
+    "context": "remediation-v1",
+    "generation": "remediation-v1",
+    "contract": "remediation-v1",
+    "structure": "remediation-v1",
+    "shortlist": "remediation-v1",
+    "packet": "remediation-v1",
+    "relevance": "remediation-v1",
+    "support": "remediation-v1",
+    "final": "remediation-v1",
+    "structural_slots": 4
+  }
+}

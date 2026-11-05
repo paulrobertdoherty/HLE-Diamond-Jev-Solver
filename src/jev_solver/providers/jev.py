@@ -38,6 +38,7 @@ class Jev:
             **({"builder_version": builder["version"]} if builder else {}),
         }
         key = digest(request)
+        self.store.event(item, "jev_request", {"request_hash": key, **request})
         cached = self.store.cached(item, key)
         if cached is not None:
             self.store.event(item, "jev_replay", {"request_hash": key})

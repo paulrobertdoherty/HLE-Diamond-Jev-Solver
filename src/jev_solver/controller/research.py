@@ -287,6 +287,10 @@ async def research(solver, q, plan, round_no, previous):
                 replace(p, relevance_status="unavailable")
                 for p in lexical_rank(shortlist)
                 if p.score > 0
+                or (
+                    config.remediation.shortlist == "remediation-v1"
+                    and p.view.get("kind") in {"definition", "theorem", "table_row"}
+                )
             ]
             budget_limited = True
     else:
@@ -294,6 +298,10 @@ async def research(solver, q, plan, round_no, previous):
             replace(p, relevance_status="not_applicable")
             for p in lexical_rank(shortlist)
             if p.score > 0
+            or (
+                config.remediation.shortlist == "remediation-v1"
+                and p.view.get("kind") in {"definition", "theorem", "table_row"}
+            )
         ]
     boundaries += boundary_rows(
         "J2_executed",
