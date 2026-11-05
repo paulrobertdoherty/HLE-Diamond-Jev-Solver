@@ -4,6 +4,7 @@ import json
 import math
 import operator
 import re
+from copy import deepcopy
 from dataclasses import asdict
 from typing import Protocol
 
@@ -80,6 +81,22 @@ CANDIDATE_SCHEMA = {
         "dependencies",
     ],
 }
+
+
+def candidate_schema(config):
+    schema = deepcopy(CANDIDATE_SCHEMA)
+    if config.remediation.citations == "remediation-v1":
+        citation = schema["properties"]["citations"]["items"]
+        for key in ("start", "end"):
+            citation["properties"].pop(key)
+            citation["required"].remove(key)
+        citation["properties"]["source_hash"] = {"type": "string"}
+        citation["required"].append("source_hash")
+        citation["description"] = (
+            "citation-quotes-v1: exact canonical quote and source identity; code resolves offsets."
+        )
+    return schema
+
 
 SYSTEM = """Solve the user's question. Return a concise answer and verification artifacts in the supplied JSON schema.
 When the schema requests a verification audit or selection, perform that task instead of drafting an answer.
@@ -332,7 +349,7 @@ class Gateway:
         p = provider or self.config.provider
         if question.images and not p.vision:
             raise ValueError("configured provider cannot preserve image inputs")
-        schema = schema or CANDIDATE_SCHEMA
+        schema = schema or candidate_schema(self.config)
         request = {
             "question": record(question),
             "context": context,

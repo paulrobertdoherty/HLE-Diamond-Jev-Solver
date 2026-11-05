@@ -30,6 +30,7 @@ from ..retrieval.corpus import Corpus
 from ..retrieval.evidence import diverse_packet
 from ..retrieval.outcomes import boundary_rows, planner_outcomes
 from ..judgments.verification import audit_dependencies
+from ..judgments.citations import parse_candidate
 from ..tools.policy import Policy
 from ..tools.sandbox import Sandbox
 from ..tools.web import AuditedWeb
@@ -79,6 +80,16 @@ class Solver:
         self.round_numbers = {}
         self.research_outcomes = {}
 
+    def parse_candidate(self, q, raw, identifier, evidence=()):
+        candidate, traces = parse_candidate(
+            raw, identifier, evidence, resolve=self.config.remediation.citations == "remediation-v1"
+        )
+        if traces:
+            self.store.event(
+                q.id, "citation_resolution", {"candidate_id": identifier, "resolutions": traces}
+            )
+        return candidate
+
     def transition(self, item: str, phase: Phase, **state):
         old = self.phases.get(item)
         if phase not in TRANSITIONS.get(old, set()):
@@ -107,7 +118,7 @@ class Solver:
                 provider=providers[i % len(providers)],
                 final=self.config.arm in {"B0", "B1"},
             )
-            candidates.append(Candidate.parse(response, f"initial-{i}"))
+            candidates.append(self.parse_candidate(q, response, f"initial-{i}"))
         return candidates
 
     async def research(self, q: QuestionView, candidate: Candidate):
@@ -308,7 +319,9 @@ class Solver:
                         response = await self.gateway.generate(
                             q, context, f"revise-{round_no}", final=True
                         )
-                        revised = Candidate.parse(response, f"revised-{round_no}")
+                        revised = self.parse_candidate(
+                            q, response, f"revised-{round_no}", list(evidence_ledger.values())
+                        )
                         candidates.append(revised)
                         self.transition(q.id, Phase.VERIFY)
                         assessment = await self.assess(
@@ -339,7 +352,9 @@ class Solver:
                             response = await self.gateway.generate(
                                 q, repair_context, f"repair-{round_no}", final=True
                             )
-                            revised = Candidate.parse(response, f"repair-{round_no}")
+                            revised = self.parse_candidate(
+                                q, response, f"repair-{round_no}", list(evidence_ledger.values())
+                            )
                             candidates.append(revised)
                             self.transition(q.id, Phase.VERIFY)
                             assessments[revised.id] = await self.assess(

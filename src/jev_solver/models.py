@@ -127,12 +127,14 @@ class Citation:
     start: int
     end: int
     critical: bool
+    source_hash: str = ""
 
     @classmethod
     def parse(cls, row: dict) -> Citation:
         c = cls(**row)
         if (
-            any(not isinstance(s, str) for s in (c.claim, c.passage_id, c.quote))
+            any(not isinstance(s, str) or not s for s in (c.claim, c.passage_id, c.quote))
+            or not isinstance(c.source_hash, str)
             or type(c.start) is not int
             or type(c.end) is not int
             or type(c.critical) is not bool

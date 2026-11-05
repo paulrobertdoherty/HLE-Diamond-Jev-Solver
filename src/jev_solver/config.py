@@ -59,6 +59,41 @@ class RelevancePolicy:
 
 
 @dataclass(frozen=True)
+class RemediationPolicy:
+    """Independent interventions. Existing profiles retain their control policies."""
+
+    citations: str = "legacy-v1"
+    context: str = "legacy-v1"
+    generation: str = "legacy-v1"
+    contract: str = "legacy-v1"
+    structure: str = "legacy-v1"
+    shortlist: str = "legacy-v1"
+    packet: str = "legacy-v1"
+    relevance: str = "legacy-v1"
+    support: str = "legacy-v1"
+    final: str = "legacy-v1"
+    structural_slots: int = 4
+
+    def validate(self):
+        for name in (
+            "citations",
+            "context",
+            "generation",
+            "contract",
+            "structure",
+            "shortlist",
+            "packet",
+            "relevance",
+            "support",
+            "final",
+        ):
+            if getattr(self, name) not in {"legacy-v1", "remediation-v1"}:
+                raise ValueError(f"unknown remediation policy: {name}")
+        if type(self.structural_slots) is not int or not 0 <= self.structural_slots <= 12:
+            raise ValueError("invalid structural reservation")
+
+
+@dataclass(frozen=True)
 class Config:
     arm: str = "J23"
     track: str = "controlled"
@@ -89,6 +124,7 @@ class Config:
     coverage_policy: str = "critical-dependencies-v1"
     relevance: RelevancePolicy = field(default_factory=RelevancePolicy)
     followup_fetch_reserve: int = 1
+    remediation: RemediationPolicy = field(default_factory=RemediationPolicy)
 
     @property
     def hash(self) -> str:
@@ -99,6 +135,9 @@ class Config:
         return self.provider.kind != "mock"
 
     def validate(self) -> Config:
+        self.remediation.validate()
+        if self.arm in {"B0", "B1"} and self.remediation != RemediationPolicy():
+            raise ValueError("raw B0/B1 definitions cannot enable remediation policies")
         if self.coverage_policy != "critical-dependencies-v1":
             raise ValueError("unknown verification coverage policy")
         rp = self.relevance
@@ -323,6 +362,8 @@ class Config:
             row["limits"] = Limits(**row["limits"])
         if "relevance" in row:
             row["relevance"] = RelevancePolicy(**row["relevance"])
+        if "remediation" in row:
+            row["remediation"] = RemediationPolicy(**row["remediation"])
         for k in ("additional_providers",):
             if k in row:
                 row[k] = tuple(ProviderConfig(**p) for p in row[k])

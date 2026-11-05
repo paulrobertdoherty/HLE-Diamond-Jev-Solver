@@ -106,6 +106,7 @@ def exact_citation(candidate: Candidate, evidence: list[EvidencePassage]) -> lis
         p = passages.get(citation.passage_id)
         valid = (
             p is not None
+            and (not citation.source_hash or citation.source_hash == p.source_hash)
             and bool(citation.quote)
             and citation.end <= len(p.text)
             and p.text[citation.start : citation.end] == citation.quote
