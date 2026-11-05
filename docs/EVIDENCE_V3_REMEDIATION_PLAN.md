@@ -2,7 +2,7 @@
 
 Prepared 2026-11-05 from the [failure analysis](EVIDENCE_V3_FAILURE_ANALYSIS.md), the [expanded review](EVIDENCE_V3_EXPANDED_REVIEW.md), and the current implementation. The objective is to preserve useful evidence, verify claims at the scope their sources establish, and check that the resulting answer satisfies the original question.
 
-**Status: planning only. Implementation starts only on the user's explicit command, after the user has preserved the current code in the comparison commit.** This handoff adds no solver behavior, configuration changes, tests, commits, or paid runs. The baseline revision is intentionally left unset until that commit exists.
+**Status: implemented with independently selectable experimental policies.** The user-preserved comparison revision is `9a7a1aa9090960fa353ecb836f96c9da3b2b2c6a`, committed and pushed before implementation. Existing profiles retain their control policies. See the [implementation results and run instructions](EVIDENCE_V3_REMEDIATION_RESULTS.md) for change identities, validation, diagnostic limitations, and pending paid/adjudication gates. No paid experiment was launched.
 
 The observed retrieval and serialization mechanisms support concrete repairs. Semantic diagnoses remain hypotheses until adjudicated or tested in controlled comparisons. Eligibility recovery, reviewer agreement, and benchmark accuracy must remain separate measurements.
 
@@ -211,4 +211,4 @@ git diff --check
 
 Include focused discovery for any new test modules. Run the existing offline failure-analysis reproduction against frozen inputs in its separate private output directory. Record optional integration skips and actual test totals at execution time; prior reports are not a new validation result.
 
-The implementation handoff should contain the baseline revision, independent change identities, versioned schemas/policies, synthetic regressions, private replay adapters, offline results, and runnable controlled-experiment manifests. Mark paid or adjudication-dependent gates as pending until actually completed. The next action remains the user's preservation of the comparison code and explicit command to begin R0.
+The implementation handoff contains the baseline revision, independent change identities, versioned schemas/policies, synthetic regressions, private replay adapters, offline results, and controlled-experiment manifests. Paid and adjudication-dependent gates remain pending; see the [handoff](EVIDENCE_V3_REMEDIATION_RESULTS.md).

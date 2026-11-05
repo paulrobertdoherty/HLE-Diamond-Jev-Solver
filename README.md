@@ -57,6 +57,8 @@ The [v3 attribution suite](docs/EVIDENCE_V3_TESTING.md) implements offline bound
 
 The [initial Luna/Terra/Haiku labeling pilot](docs/EVIDENCE_V3_LABEL_PILOT.md) records paid review costs, output-grounding failures, provisional Terra diagnoses and Haiku disagreement notes. It preserves unresolved gold-label status and does not change solver acceptance.
 
+The [remediation implementation and validation](docs/EVIDENCE_V3_REMEDIATION_RESULTS.md) adds independently selectable citation, context, contract, retrieval, support, and final-answer policies plus controlled engine orchestration. Existing profiles retain their controls. Deterministic tests and historical replays pass; semantic promotion and paid comparisons remain pending.
+
 ## Checks
 
 ```bash
