@@ -185,7 +185,14 @@ def reconcile_graph(dependencies, previous, contract, dispositions=()):
                         {
                             k: deepcopy(old[k])
                             for k in Dependency.__dataclass_fields__
-                            if k not in {"id", "premise_version"}
+                            if k
+                            not in {
+                                "id",
+                                "premise_version",
+                                "critical",
+                                "assumptions",
+                                "obligations",
+                            }
                         }
                     )
                     current["status"], current["reason"] = (

@@ -99,10 +99,15 @@ class PersistentGraphTests(unittest.TestCase):
         self.assertEqual(nodes[1]["status"], "not_run")
 
     def test_factual_to_derived_cannot_erase_basis_across_revisions(self):
-        old = self.dep()
-        new = self.dep(kind="derived", passage_ids=[])
+        old = self.dep(critical=False, assumptions=("A",), obligations=("output",))
+        new = self.dep(
+            kind="derived", passage_ids=[], assumptions=["B"], obligations=["chronology"]
+        )
         nodes, _, _ = reconcile_graph([new], [old], self.contract())
         self.assertEqual(nodes[0]["kind"], "factual")
+        self.assertTrue(nodes[0]["critical"])
+        self.assertEqual(nodes[0]["assumptions"], ["A", "B"])
+        self.assertEqual(nodes[0]["obligations"], ["output", "chronology"])
         nodes, _, _ = reconcile_graph([new], nodes, self.contract())
         self.assertEqual(nodes[0]["kind"], "factual")
 
