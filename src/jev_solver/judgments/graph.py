@@ -169,10 +169,10 @@ def reconcile_graph(dependencies, previous, contract, dispositions=()):
         if current is not None:
             current["critical"] = current["critical"] or old["critical"]
             current["assumptions"] = list(
-                dict.fromkeys(old["assumptions"] + current["assumptions"])
+                dict.fromkeys([*old["assumptions"], *current["assumptions"]])
             )
             current["obligations"] = list(
-                dict.fromkeys(old["obligations"] + current["obligations"])
+                dict.fromkeys([*old["obligations"], *current["obligations"]])
             )
             if graph_fingerprint(current) != graph_fingerprint(old):
                 current["premise_version"] = max(
@@ -185,7 +185,14 @@ def reconcile_graph(dependencies, previous, contract, dispositions=()):
                         {
                             k: deepcopy(old[k])
                             for k in Dependency.__dataclass_fields__
-                            if k not in {"id", "premise_version"}
+                            if k
+                            not in {
+                                "id",
+                                "premise_version",
+                                "critical",
+                                "assumptions",
+                                "obligations",
+                            }
                         }
                     )
                     current["status"], current["reason"] = (
