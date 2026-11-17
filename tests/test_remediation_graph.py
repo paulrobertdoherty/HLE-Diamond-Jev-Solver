@@ -75,6 +75,13 @@ class PersistentGraphTests(unittest.TestCase):
             **changes,
         }
 
+    def test_recovered_declared_premise_merges_tuple_and_list_fields(self):
+        previous = self.dep(assumptions=("Convention A",), obligations=("output",))
+        current = self.dep(assumptions=["Convention A"], obligations=["chronology"])
+        nodes, _, _ = reconcile_graph([current], [previous], self.contract())
+        self.assertEqual(nodes[0]["obligations"], ["output", "chronology"])
+        self.assertEqual(nodes[0]["assumptions"], ["Convention A"])
+
     def test_omitted_chronology_or_convention_is_retained(self):
         old = self.dep(obligations=["chronology"])
         nodes, events, _ = reconcile_graph([], [old], self.contract())

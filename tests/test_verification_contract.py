@@ -72,6 +72,24 @@ class VerificationContractTests(unittest.IsolatedAsyncioTestCase):
         self.addAsyncCleanup(solver.close)
         return solver
 
+    def test_planner_history_retains_leads_without_rejected_passage_text(self):
+        from jev_solver.retrieval.outcomes import planner_outcomes
+
+        lead = {"url": "https://example.org/reference", "status": "not_fetched"}
+        outcome = {
+            "round": 0,
+            "searches": [{"query": "factual lookup"}],
+            "leads": [lead],
+            "boundaries": [{"boundary": "fetched"}],
+            "relevance_observations": [{"text": "Rejected passage."}],
+        }
+        view = planner_outcomes([outcome])[0]
+        self.assertEqual(view["searches"], outcome["searches"])
+        self.assertEqual(view["leads"][0]["url"], lead["url"])
+        self.assertNotIn("boundaries", view)
+        self.assertNotIn("relevance_observations", view)
+        self.assertIn("relevance_observations", outcome)
+
     async def test_undeclared_factual_guess_and_critical_gap_cannot_bypass_audit(self):
         solver = self.solver()
         candidate = Candidate(

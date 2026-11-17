@@ -44,7 +44,22 @@ def planner_outcomes(outcomes):
         ]
         result.append(
             {
-                **outcome,
+                **{
+                    key: outcome[key]
+                    for key in (
+                        "round",
+                        "status",
+                        "search_attempts",
+                        "fetch_attempts",
+                        "reserved_followup_fetches",
+                        "searches",
+                        "fetches",
+                        "passage_count",
+                        "packet_ids",
+                        "retained_sources",
+                    )
+                    if key in outcome
+                },
                 "leads": [
                     {**lead, "snippet": lead.get("snippet", "")[:400]} for lead in ordered[:8]
                 ],
